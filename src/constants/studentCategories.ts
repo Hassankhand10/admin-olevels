@@ -1,0 +1,8 @@
+export const STUDENT_CATEGORY = {
+  HOME_SCHOOLING: "HOME_SCHOOLING",
+  ONLINE_SCHOOLING: "ONLINE_SCHOOLING", 
+  PHYSICAL_SCHOOLING: "PHYSICAL_SCHOOLING",
+  khiMM: "khiMM"
+} as const;
+
+export type StudentCategory = typeof STUDENT_CATEGORY[keyof typeof STUDENT_CATEGORY];
