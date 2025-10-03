@@ -2,7 +2,7 @@ import { ref, get, set, update } from 'firebase/database';
 import { database } from '../config/firebase';
 import { Assignment, StudentData } from '../types';
 
-export const fetchTopics = async (): Promise<{[key: string]: {course: any}}> => {
+export const fetchTopics = async (): Promise<{[key: string]: {course: any, name?: string}}> => {
   try {
     console.log('Fetching topics from Firebase path: topics');
     const assignmentsRef = ref(database, 'topics');
@@ -14,17 +14,18 @@ export const fetchTopics = async (): Promise<{[key: string]: {course: any}}> => 
       const data = snapshot.val();
       console.log('Firebase data received:', data);
       
-      // Extract only keys and course objects for each topic
-      const topicsWithCourses: {[key: string]: {course: any}} = {};
+      // Extract keys, course objects, and topic names for each topic
+      const topicsWithCourses: {[key: string]: {course: any, name?: string}} = {};
       
       Object.keys(data).forEach(topicKey => {
         const topicData = data[topicKey];
         topicsWithCourses[topicKey] = {
-          course: topicData.course || null // Only fetch course object
+          course: topicData.course || null,
+          name: topicData.name || topicKey // Use topic name if available, otherwise use key
         };
       });
       
-      console.log('Topics extracted (keys + course only):', topicsWithCourses);
+      console.log('Topics extracted (keys + course + name):', topicsWithCourses);
       return topicsWithCourses;
     } else {
       console.log('No data found at topics path');

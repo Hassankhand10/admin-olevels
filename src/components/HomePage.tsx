@@ -23,7 +23,7 @@ export const HomePage = () => {
       description: 'Manage weekly tests and student submissions',
       onClick: () => navigate('/dashboard/weekly-test'),
       isMain: true
-    }
+    },
   ];
 
   return (

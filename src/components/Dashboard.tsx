@@ -5,17 +5,27 @@ import OLevelsLogo from '../assets/OLevels-logo-color.png';
 import { fetchAssignments, fetchStudentSubmissions, fetchTopics, updateSupervisionApproval, fetchStudentCategories } from '../services/firebaseService';
 import { Assignment, StudentData } from '../types';
 import toast, { Toaster } from 'react-hot-toast';
+import { GRADING_BASE_URL , API_BASE_URL} from '../config/constants';
 
 export const Dashboard = () => {
   const navigate = useNavigate();
   const [activeTab] = useState<'weekly-test'>('weekly-test');
   const [courses, setCourses] = useState<{id: number, title: string}[]>([]);
   const [selectedCourse, setSelectedCourse] = useState<{id: number | 'all', title: string} | null>(null);
-  const [allTopics, setAllTopics] = useState<{[key: string]: {course: any}}>({});
+  const [allTopics, setAllTopics] = useState<{[key: string]: {course: any, name?: string}}>({});
   const [filteredTopics, setFilteredTopics] = useState<{id: string, title: string}[]>([]);
   const [selectedTopic, setSelectedTopic] = useState<string>('');
   const [assignments, setAssignments] = useState<{ id: string; data: Assignment }[]>([]);
   const [allAssignments, setAllAssignments] = useState<{[topicId: string]: { id: string; data: Assignment }[]}>({});
+  const [assignmentsByCourse, setAssignmentsByCourse] = useState<{[courseId: string]: Array<{
+    topicId: string;
+    topicName: string;
+    assignment: { id: string; data: Assignment };
+    needsGrading: boolean;
+    totalStudents: number;
+    submittedStudents: number;
+    gradedStudents: number;
+  }>}>({});
   const [ungradedAssignments, setUngradedAssignments] = useState<Array<{
     topicId: string;
     topicName: string;
@@ -31,7 +41,6 @@ export const Dashboard = () => {
   const [loadingCourses, setLoadingCourses] = useState(false);
   const [loadingTopics, setLoadingTopics] = useState(false);
   const [loadingAssignments, setLoadingAssignments] = useState(false);
-  const [loadingAllAssignments, setLoadingAllAssignments] = useState(false);
   const [loadingUngradedAssignments, setLoadingUngradedAssignments] = useState(false);
   const [loadingSubmissions, setLoadingSubmissions] = useState(false);
   const [filterType, setFilterType] = useState<'all' | 'overdue' | 'in-progress'>('all');
@@ -40,6 +49,11 @@ export const Dashboard = () => {
   // Student submissions filtering
   const [studentFilterType, setStudentFilterType] = useState<'all' | 'graded' | 'submitted' | 'pending'>('all');
   const [studentSearchName, setStudentSearchName] = useState('');
+  
+  // Course filter for pending tests
+  const [pendingCourseFilter, setPendingCourseFilter] = useState<string>('all');
+  
+  
 
   useEffect(() => {
     loadCourses();
@@ -68,7 +82,7 @@ export const Dashboard = () => {
   const loadCourses = async () => {
     setLoadingCourses(true);
     try {
-      const response = await fetch('http://localhost:5001/olevels-live/us-central1/api/admin/getAllCourses');
+      const response = await fetch(`${API_BASE_URL}/api/admin/getAllCourses`);
       const data = await response.json();
       
       if (data.success) {
@@ -103,8 +117,93 @@ export const Dashboard = () => {
     }
   };
 
+  const loadUngradedAssignments = async (assignmentsData: {[topicId: string]: { id: string; data: Assignment }[]}, topicsData: {[key: string]: {course: any}}) => {
+    setLoadingUngradedAssignments(true);
+    try {
+      const ungradedList: Array<{
+        topicId: string;
+        topicName: string;
+        assignment: { id: string; data: Assignment };
+        needsGrading: boolean;
+        totalStudents: number;
+        submittedStudents: number;
+        gradedStudents: number;
+      }> = [];
+
+      // Process assignments in batches to reduce API calls - only WeeklyTest assignments
+      const allAssignments = Object.entries(assignmentsData).flatMap(([topicId, topicAssignments]) =>
+        topicAssignments
+          .filter(assignment => assignment.data.selectedAssignmentCategory === 'WeeklyTest')
+          .map(assignment => ({ topicId, assignment }))
+      );
+
+      // Process in batches of 5 to avoid overwhelming the API
+      const batchSize = 5;
+      for (let i = 0; i < allAssignments.length; i += batchSize) {
+        const batch = allAssignments.slice(i, i + batchSize);
+        
+        const batchPromises = batch.map(async ({ topicId, assignment }) => {
+          try {
+            const studentData = await fetchStudentSubmissions(topicId, assignment.data.title);
+            const studentCount = Object.keys(studentData).length;
+            
+            let submittedCount = 0;
+            let gradedCount = 0;
+
+            Object.values(studentData).forEach((student: any) => {
+              if (student.submission) {
+                submittedCount++;
+                if (student.graded) {
+                  gradedCount++;
+                }
+              }
+            });
+
+            // Only include if there are submissions but not all are graded
+            if (submittedCount > 0 && gradedCount < submittedCount) {
+              return {
+                topicId,
+                topicName: topicsData[topicId]?.course?.name || topicId,
+                assignment,
+                needsGrading: true,
+                totalStudents: studentCount,
+                submittedStudents: submittedCount,
+                gradedStudents: gradedCount
+              };
+            }
+            return null;
+          } catch (error) {
+            console.error(`Error checking assignment ${assignment.data.title} in topic ${topicId}:`, error);
+            return null;
+          }
+        });
+
+        const batchResults = await Promise.all(batchPromises);
+        ungradedList.push(...batchResults.filter(item => item !== null));
+      }
+
+      setUngradedAssignments(ungradedList);
+      
+      // Group assignments by course efficiently
+      const courseGrouped: {[courseId: string]: typeof ungradedList} = {};
+      ungradedList.forEach(item => {
+        const courseId = topicsData[item.topicId]?.course?.id || 'unknown';
+        if (!courseGrouped[courseId]) {
+          courseGrouped[courseId] = [];
+        }
+        courseGrouped[courseId].push(item);
+      });
+      setAssignmentsByCourse(courseGrouped);
+      
+    } catch (error) {
+      console.error('Error loading ungraded assignments:', error);
+      toast.error('Error loading ungraded assignments');
+    } finally {
+      setLoadingUngradedAssignments(false);
+    }
+  };
+
   const loadAllAssignmentsFromAllTopics = async () => {
-    setLoadingAllAssignments(true);
     try {
       const topicsData = await fetchTopics();
       const allAssignmentsData: {[topicId: string]: { id: string; data: Assignment }[]} = {};
@@ -130,85 +229,25 @@ export const Dashboard = () => {
     } catch (error) {
       console.error('Error loading all assignments:', error);
       toast.error('Error loading all assignments');
-    } finally {
-      setLoadingAllAssignments(false);
     }
   };
 
-  const loadUngradedAssignments = async (assignmentsData: {[topicId: string]: { id: string; data: Assignment }[]}, topicsData: {[key: string]: {course: any}}) => {
-    setLoadingUngradedAssignments(true);
-    try {
-      const ungradedList: Array<{
-        topicId: string;
-        topicName: string;
-        assignment: { id: string; data: Assignment };
-        needsGrading: boolean;
-        totalStudents: number;
-        submittedStudents: number;
-        gradedStudents: number;
-      }> = [];
-
-      for (const [topicId, topicAssignments] of Object.entries(assignmentsData)) {
-        const topicName = topicsData[topicId]?.course?.name || topicId;
-        
-        for (const assignment of topicAssignments) {
-          try {
-            // Get students for this assignment
-            const studentData = await fetchStudentSubmissions(topicId, assignment.data.title);
-            const studentCount = Object.keys(studentData).length;
-            
-            let submittedCount = 0;
-            let gradedCount = 0;
-
-            Object.values(studentData).forEach((student: any) => {
-              if (student.submission) {
-                submittedCount++;
-                if (student.graded) {
-                  gradedCount++;
-                }
-              }
-            });
-
-            // Add to ungraded if there are submissions but not all are graded
-            if (submittedCount > 0 && gradedCount < submittedCount) {
-              ungradedList.push({
-                topicId,
-                topicName,
-                assignment,
-                needsGrading: true,
-                totalStudents: studentCount,
-                submittedStudents: submittedCount,
-                gradedStudents: gradedCount
-              });
-            }
-          } catch (error) {
-            console.error(`Error checking assignment ${assignment.data.title} in topic ${topicId}:`, error);
-          }
-        }
-      }
-
-      setUngradedAssignments(ungradedList);
-    } catch (error) {
-      console.error('Error loading ungraded assignments:', error);
-      toast.error('Error loading ungraded assignments');
-    } finally {
-      setLoadingUngradedAssignments(false);
-    }
-  };
 
   const filterTopicsByCourse = () => {
     if (!selectedCourse || selectedCourse.id === 'all') {
+      // Show all topics when "All" is selected or no course is selected
       const allTopicsList = Object.keys(allTopics).map(id => ({
         id,
-        title: allTopics[id].course?.name || id
+        title: allTopics[id].name || id // Use topic name if available, otherwise use ID
       }));
       setFilteredTopics(allTopicsList);
     } else {
+      // Show only topics that belong to the selected course
       const filteredTopicsList = Object.keys(allTopics)
         .filter(id => allTopics[id].course?.id === selectedCourse.id)
         .map(id => ({
           id,
-          title: allTopics[id].course?.name || id
+          title: allTopics[id].name || id // Use topic name if available, otherwise use ID
         }));
       setFilteredTopics(filteredTopicsList);
     }
@@ -273,10 +312,6 @@ export const Dashboard = () => {
     }
   };
 
-  const handleAssignmentClick = (assignmentId: string, assignmentTitle: string) => {
-    setSelectedAssignment({ id: assignmentId, title: assignmentTitle });
-    loadStudents(selectedTopic, assignmentTitle);
-  };
 
   const formatDeadline = (deadline: string) => {
     const date = new Date(deadline);
@@ -308,145 +343,8 @@ export const Dashboard = () => {
     return categoryData.category;
   };
 
-  // Assignment statistics helper functions
-  const getAssignmentStats = () => {
-    const stats = {
-      totalAssignments: assignments.length,
-      submittedNotGraded: 0,
-      notSubmitted: 0,
-      graded: 0
-    };
 
-    assignments.forEach(() => {
-      const assignmentStudents = students; // Current students for selected assignment
-      const studentCount = Object.keys(assignmentStudents).length;
-      
-      if (studentCount === 0) {
-        stats.notSubmitted++;
-        return;
-      }
 
-      let submittedCount = 0;
-      let gradedCount = 0;
-
-      Object.values(assignmentStudents).forEach((studentData: any) => {
-        if (studentData.submission) {
-          submittedCount++;
-          if (studentData.graded) {
-            gradedCount++;
-          }
-        }
-      });
-
-      if (submittedCount === 0) {
-        stats.notSubmitted++;
-      } else if (gradedCount === submittedCount && submittedCount > 0) {
-        stats.graded++;
-      } else {
-        stats.submittedNotGraded++;
-      }
-    });
-
-    return stats;
-  };
-
-  // Get all ungraded assignments across all topics
-  const getAllUngradedAssignments = async () => {
-    const ungradedAssignments: Array<{
-      topicId: string;
-      topicName: string;
-      assignment: { id: string; data: Assignment };
-      needsGrading: boolean;
-      totalStudents: number;
-      submittedStudents: number;
-      gradedStudents: number;
-    }> = [];
-
-    for (const [topicId, topicAssignments] of Object.entries(allAssignments)) {
-      const topicName = allTopics[topicId]?.course?.name || topicId;
-      
-      for (const assignment of topicAssignments) {
-        try {
-          // Get students for this assignment
-          const studentData = await fetchStudentSubmissions(topicId, assignment.data.title);
-          const studentCount = Object.keys(studentData).length;
-          
-          if (studentCount === 0) {
-            ungradedAssignments.push({
-              topicId,
-              topicName,
-              assignment,
-              needsGrading: true,
-              totalStudents: 0,
-              submittedStudents: 0,
-              gradedStudents: 0
-            });
-            continue;
-          }
-
-          let submittedCount = 0;
-          let gradedCount = 0;
-
-          Object.values(studentData).forEach((student: any) => {
-            if (student.submission) {
-              submittedCount++;
-    if (student.graded) {
-                gradedCount++;
-              }
-            }
-          });
-
-          // Add to ungraded if there are submissions but not all are graded
-          if (submittedCount > 0 && gradedCount < submittedCount) {
-            ungradedAssignments.push({
-              topicId,
-              topicName,
-              assignment,
-              needsGrading: true,
-              totalStudents: studentCount,
-              submittedStudents: submittedCount,
-              gradedStudents: gradedCount
-            });
-          }
-        } catch (error) {
-          console.error(`Error checking assignment ${assignment.data.title} in topic ${topicId}:`, error);
-        }
-      }
-    }
-
-    return ungradedAssignments;
-  };
-
-  const getAssignmentsByStatus = (status: 'submitted-not-graded' | 'not-submitted') => {
-    return assignments.filter(() => {
-      const assignmentStudents = students;
-      const studentCount = Object.keys(assignmentStudents).length;
-      
-      if (studentCount === 0) {
-        return status === 'not-submitted';
-      }
-
-      let submittedCount = 0;
-      let gradedCount = 0;
-
-      Object.values(assignmentStudents).forEach((studentData: any) => {
-        if (studentData.submission) {
-          submittedCount++;
-          if (studentData.graded) {
-            gradedCount++;
-          }
-        }
-      });
-
-      if (status === 'submitted-not-graded') {
-        return submittedCount > 0 && gradedCount < submittedCount;
-      } else if (status === 'not-submitted') {
-        return submittedCount === 0;
-      }
-
-      return false;
-    });
-  };
 
   const groupStudentsByCategory = () => {
     const grouped: {[category: string]: {[name: string]: any}} = {};
@@ -462,7 +360,7 @@ export const Dashboard = () => {
       } else if (studentFilterType === 'submitted') {
         matchesFilter = data.submission === true && data.graded !== true;
       } else if (studentFilterType === 'pending') {
-        matchesFilter = data.submission !== true; // Only show if submission is false/undefined
+        matchesFilter = data.submission !== true && data.graded !== true;
       }
       
       const matchesSearch = studentSearchName === '' || 
@@ -489,6 +387,23 @@ export const Dashboard = () => {
     return daysUntilDeadline > 0 && daysUntilDeadline <= 7; // Within 7 days
   };
 
+  // Filter assignments by course for pending tests section
+  const getFilteredAssignmentsByCourse = () => {
+    if (pendingCourseFilter === 'all') {
+      return assignmentsByCourse;
+    }
+    
+    const filtered: {[courseId: string]: Array<any>} = {};
+    Object.entries(assignmentsByCourse).forEach(([courseId, assignments]) => {
+      if (courseId === pendingCourseFilter) {
+        filtered[courseId] = assignments;
+      }
+    });
+    return filtered;
+  };
+
+
+
   // Filter assignments based on type and search
   const filteredAssignments = assignments.filter(assignment => {
     const matchesFilter = filterType === 'all' || 
@@ -501,6 +416,13 @@ export const Dashboard = () => {
     
     return matchesFilter && matchesSearch;
   });
+
+  // Handle start grading redirect
+  const handleStartGrading = (topicId: string, assignmentTitle: string) => {
+    const topicName = allTopics[topicId]?.name || topicId;
+    const gradingUrl = `${GRADING_BASE_URL}/assignment/${topicName}/teacher/${assignmentTitle}/grading/all`;
+    window.open(gradingUrl, '_blank');
+  };
 
   const studentCount = Object.keys(students).length;
   const submittedCount = Object.values(students).filter((s: any) => s.submission).length;
@@ -536,141 +458,203 @@ export const Dashboard = () => {
                   <div className="bg-gradient-to-br from-[#b30104] to-[#7a0103] p-2 rounded-lg shadow-lg">
                     <CheckCircle className="w-6 h-6 text-white" />
                   </div>
-                  Assignment Summary - All Topics
+                  Paper Marking Dashboard - Course Overview
                 </h2>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   
-                  {/* Total Assignments */}
-                  <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-6 hover:shadow-lg transition-all duration-200">
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-lg font-semibold text-blue-800">Total Assignments</h3>
-                      <div className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-bold">
-                        {Object.values(allAssignments).flat().length}
-                      </div>
-                    </div>
-                    <p className="text-sm text-blue-700 mb-4">All assignments across all topics</p>
-                    <div className="text-xs text-blue-600">
-                      <p>📚 Topics: {Object.keys(allAssignments).length}</p>
-                      <p>📝 Assignments per topic: {Object.keys(allAssignments).length > 0 ? Math.round(Object.values(allAssignments).flat().length / Object.keys(allAssignments).length) : 0}</p>
-                    </div>
-                  </div>
-
-                  {/* Ungraded Assignments */}
+                  {/* Unmarked Count */}
                   <div className="bg-gradient-to-br from-orange-50 to-yellow-50 border border-orange-200 rounded-xl p-6 hover:shadow-lg transition-all duration-200">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-lg font-semibold text-orange-800">Needs Grading</h3>
+                      <h3 className="text-lg font-semibold text-orange-800">Unmarked Papers</h3>
                       <div className="bg-orange-100 text-orange-800 px-3 py-1 rounded-full text-sm font-bold">
                         {ungradedAssignments.length}
                       </div>
                     </div>
-                    <p className="text-sm text-orange-700 mb-4">Assignments with submissions pending grading</p>
+                    <p className="text-sm text-orange-700 mb-4">Weekly tests pending marking</p>
                     <div className="text-xs text-orange-600">
-                      <p>⏰ Pending: {ungradedAssignments.length}</p>
-                      <p>📊 {Object.values(allAssignments).flat().length > 0 ? Math.round((ungradedAssignments.length / Object.values(allAssignments).flat().length) * 100) : 0}% of total</p>
+                      <p>📚 Across {Object.keys(assignmentsByCourse).length} courses</p>
+                      <p>📝 Ready for marking</p>
                     </div>
                   </div>
 
-                  {/* Completed Assignments */}
+                  {/* Marked Count */}
                   <div className="bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 rounded-xl p-6 hover:shadow-lg transition-all duration-200">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-lg font-semibold text-green-800">Completed</h3>
+                      <h3 className="text-lg font-semibold text-green-800">Marked Papers</h3>
                       <div className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-bold">
-                        {Object.values(allAssignments).flat().length - ungradedAssignments.length}
+                        {Object.values(assignmentsByCourse).flat().reduce((sum, item) => sum + item.gradedStudents, 0)}
                       </div>
                     </div>
-                    <p className="text-sm text-green-700 mb-4">All submissions graded</p>
+                    <p className="text-sm text-green-700 mb-4">Papers already marked</p>
                     <div className="text-xs text-green-600">
-                      <p>✅ Completed: {Object.values(allAssignments).flat().length - ungradedAssignments.length}</p>
-                      <p>📊 {Object.values(allAssignments).flat().length > 0 ? Math.round(((Object.values(allAssignments).flat().length - ungradedAssignments.length) / Object.values(allAssignments).flat().length) * 100) : 0}% of total</p>
+                      <p>✅ Completed marking</p>
+                      <p>📊 Ready for review</p>
+                    </div>
+                  </div>
+
+                  {/* Total Papers */}
+                  <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-6 hover:shadow-lg transition-all duration-200">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-semibold text-blue-800">Total Papers</h3>
+                      <div className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-bold">
+                        {Object.values(assignmentsByCourse).flat().reduce((sum, item) => sum + item.submittedStudents, 0)}
+                      </div>
+                    </div>
+                    <p className="text-sm text-blue-700 mb-4">All submitted papers</p>
+                    <div className="text-xs text-blue-600">
+                      <p>📚 Course-wise breakdown</p>
+                      <p>📝 Weekly test submissions</p>
                     </div>
                   </div>
 
                 </div>
               </div>
 
-              {/* All Ungraded Assignments Section */}
+              {/* Course-wise Ungraded Assignments Section */}
               <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100/50 p-8 hover:shadow-2xl transition-all duration-300">
               <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-3">
                 <div className="bg-gradient-to-br from-[#b30104] to-[#7a0103] p-2 rounded-lg shadow-lg">
                   <CheckCircle className="w-6 h-6 text-white" />
                 </div>
-                All Ungraded Assignments ({ungradedAssignments.length})
+                Pending Weekly Tests by Course ({ungradedAssignments.length} unmarked)
                 {loadingUngradedAssignments && (
                   <div className="w-5 h-5 border-2 border-[#b30104] border-t-transparent rounded-full animate-spin"></div>
                 )}
               </h2>
               
+              {/* Course Filter */}
+              <div className="mb-6">
+                <div className="flex items-center gap-3">
+                  <label className="text-sm font-medium text-gray-700">Filter by Course:</label>
+                  <select
+                    value={pendingCourseFilter}
+                    onChange={(e) => setPendingCourseFilter(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#b30104] focus:border-transparent outline-none text-sm bg-white"
+                  >
+                    <option value="all">All Courses</option>
+                    {courses.map(course => (
+                      <option key={course.id} value={course.id}>
+                        {course.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              
               {loadingUngradedAssignments ? (
                 <div className="flex items-center justify-center py-12">
                   <div className="w-8 h-8 border-2 border-[#b30104] border-t-transparent rounded-full animate-spin"></div>
-                  <span className="ml-3 text-gray-600">Loading ungraded assignments...</span>
+                  <span className="ml-3 text-gray-600">Loading assignments...</span>
                 </div>
-              ) : ungradedAssignments.length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {ungradedAssignments.map((item) => (
-            <button
-                      key={`${item.topicId}-${item.assignment.id}`}
-                      onClick={() => {
-                        setSelectedCourse({id: 'all', title: 'All'});
-                        setSelectedTopic(item.topicId);
-                        setSelectedAssignment({ id: item.assignment.id, title: item.assignment.data.title });
-                      }}
-                      className="text-left p-6 rounded-xl border border-orange-200 bg-gradient-to-br from-orange-50 to-yellow-50 hover:from-orange-100 hover:to-yellow-100 hover:shadow-lg transition-all duration-200 group"
-                    >
-                      <div className="flex items-start justify-between mb-3">
-                        <h3 className="font-bold text-lg text-gray-800 group-hover:text-orange-800 transition-colors">
-                          {item.assignment.data.title}
-                        </h3>
-                        <span className="bg-orange-100 text-orange-800 text-xs px-2 py-1 rounded-full font-medium">
-                          Needs Grading
-                        </span>
-                      </div>
-                      
-                      <div className="space-y-2 text-sm text-gray-600">
-                        <div className="flex items-center gap-2">
-                          <span className="text-orange-600">📚</span>
-                          <span className="font-medium">Topic: {item.topicId}</span>
+              ) : Object.keys(getFilteredAssignmentsByCourse()).length > 0 ? (
+                <div className="space-y-8">
+                  {Object.entries(getFilteredAssignmentsByCourse()).map(([courseId, courseAssignments]) => {
+                    const courseName = courses.find(c => c.id === Number(courseId))?.title || `Course ${courseId}`;
+                    const ungradedCount = courseAssignments.length;
+                    
+                    return (
+                      <div key={courseId} className="border border-gray-200 rounded-xl p-6 bg-gradient-to-br from-gray-50 to-white">
+                        <div className="flex items-center justify-between mb-4">
+                          <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                            <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-bold">
+                              {ungradedCount}
+                            </span>
+                            {courseName}
+                          </h3>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-orange-600">👥</span>
-                          <span>Students: {item.submittedStudents}/{item.totalStudents} submitted</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-orange-600">✅</span>
-                          <span>Graded: {item.gradedStudents}/{item.submittedStudents}</span>
-              </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-orange-600">📅</span>
-                          <span>Deadline: {formatDeadline(item.assignment.data.deadline)}</span>
-        </div>
-      </div>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {courseAssignments.map((item) => (
+                            <button
+                              key={`${item.topicId}-${item.assignment.id}`}
+                              onClick={() => {
+                                setSelectedCourse({id: Number(courseId), title: courseName});
+                                setSelectedTopic(item.topicId);
+                                setSelectedAssignment({ id: item.assignment.id, title: item.assignment.data.title });
+                              }}
+                              className="text-left p-4 rounded-lg border border-orange-200 bg-gradient-to-br from-orange-50 to-yellow-50 hover:from-orange-100 hover:to-yellow-100 hover:shadow-lg transition-all duration-200 group"
+                            >
+                              <div className="flex items-start justify-between mb-2">
+                                <h4 className="font-bold text-base text-gray-800 group-hover:text-orange-800 transition-colors">
+                                  {item.assignment.data.title}
+                                </h4>
+                                <span className="bg-orange-100 text-orange-800 text-xs px-2 py-1 rounded-full font-medium">
+                                  Needs Grading
+                                </span>
+                              </div>
+                              
+                              <div className="space-y-1 text-xs text-gray-600">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-orange-600">📚</span>
+                                  <span className="font-medium">Topic: {allTopics[item.topicId]?.name || item.topicId}</span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="text-orange-600">👥</span>
+                                  <span>{item.submittedStudents}/{item.totalStudents} submitted</span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="text-orange-600">✅</span>
+                                  <span>{item.gradedStudents}/{item.submittedStudents} graded</span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="text-orange-600">📅</span>
+                                  <span>{formatDeadline(item.assignment.data.deadline)}</span>
+                                </div>
+                              </div>
 
-                      <div className="mt-4 bg-orange-200 rounded-lg p-2">
-                        <div className="flex justify-between text-xs font-medium text-orange-800">
-                          <span>Progress</span>
-                          <span>{Math.round((item.gradedStudents / item.submittedStudents) * 100)}%</span>
-                        </div>
-                        <div className="mt-1 bg-orange-300 rounded-full h-2">
-                          <div 
-                            className="bg-orange-600 h-2 rounded-full transition-all duration-300"
-                            style={{ width: `${(item.gradedStudents / item.submittedStudents) * 100}%` }}
-                          ></div>
+                              <div className="mt-3 bg-orange-200 rounded-lg p-2">
+                                <div className="flex justify-between text-xs font-medium text-orange-800">
+                                  <span>Progress</span>
+                                  <span>{Math.round((item.gradedStudents / item.submittedStudents) * 100)}%</span>
+                                </div>
+                                <div className="mt-1 bg-orange-300 rounded-full h-1.5">
+                                  <div 
+                                    className="bg-orange-600 h-1.5 rounded-full transition-all duration-300"
+                                    style={{ width: `${(item.gradedStudents / item.submittedStudents) * 100}%` }}
+                                  ></div>
+                                </div>
+                              </div>
+
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleStartGrading(item.topicId, item.assignment.data.title);
+                                }}
+                                className="mt-3 w-full bg-gradient-to-r from-[#b30104] to-[#7a0103] hover:from-[#7a0103] hover:to-[#b30104] text-white px-3 py-2 rounded-lg text-xs font-semibold transition-all duration-200 shadow-lg hover:shadow-xl"
+                              >
+                                Start Grading
+                              </button>
+                            </button>
+                          ))}
                         </div>
                       </div>
-                    </button>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="text-center py-12">
-                  <div className="bg-green-100 p-4 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
-                    <CheckCircle className="w-8 h-8 text-green-600" />
-                  </div>
-                  <h3 className="text-lg font-semibold text-gray-700 mb-2">All Caught Up!</h3>
-                  <p className="text-gray-500">No assignments need grading at the moment.</p>
+                  {Object.keys(assignmentsByCourse).length === 0 ? (
+                    <>
+                      <div className="bg-green-100 p-4 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
+                        <CheckCircle className="w-8 h-8 text-green-600" />
+                      </div>
+                      <h3 className="text-lg font-semibold text-gray-700 mb-2">All Caught Up!</h3>
+                      <p className="text-gray-500">No assignments need grading at the moment.</p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="bg-orange-100 p-4 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
+                        <FileText className="w-8 h-8 text-orange-600" />
+                      </div>
+                      <h3 className="text-lg font-semibold text-gray-700 mb-2">No Results Found</h3>
+                      <p className="text-gray-500">No pending assignments found for the selected course. Try selecting a different course or "All Courses".</p>
+                    </>
+                  )}
                 </div>
               )}
             </div>
+
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 max-h-[1200px]">
             <div className="lg:col-span-1 space-y-6">
@@ -1029,14 +1013,11 @@ export const Dashboard = () => {
                                 {/* Grade Button */}
                                 <td className="px-6 py-5 text-center">
                                   <button
-                                    onClick={() => navigate('/dashboard/grading', {
-                                      state: {
-                                        studentName: name,
-                                        studentData: data,
-                                        assignmentTitle: selectedAssignment?.title,
-                                        topic: selectedTopic
-                                      }
-                                    })}
+                                    onClick={() => {
+                                      const topicName = allTopics[selectedTopic]?.name || selectedTopic;
+                                      const gradingUrl = `${GRADING_BASE_URL}/assignment/${topicName}/teacher/${selectedAssignment?.title}/grading/${name}`;
+                                      window.open(gradingUrl, '_blank');
+                                    }}
                                     disabled={!data.submission}
                                     className="inline-flex items-center gap-2 bg-gradient-to-r from-[#b30104] to-[#7a0103] hover:from-[#7a0103] hover:to-[#b30104] text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 disabled:opacity-50 hover:scale-105 shadow-lg hover:shadow-xl"
                                   >
