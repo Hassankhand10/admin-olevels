@@ -71,6 +71,7 @@ export const isAuthenticatedAdminAsync = async (): Promise<boolean> => {
   }
   
   const teacherData = checkTeacherCookies();
+  console.log('teacherData', teacherData);
   
   if (!teacherData) {
     return false;
@@ -121,14 +122,14 @@ export const authGuardAsync = async (): Promise<boolean> => {
   // No cookies found - redirect to teacher login
   if (!teacherData) {
     console.log('No teacher cookies found, redirecting to teacher login...');
-    window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
+    window.open(`${VITE_BASE_URL}/teacher?redirect=${currentUrl}`, '_blank');
     return false;
   }
   
   // Not a teacher - redirect to teacher login
   if (!teacherData.isTeacher) {
     console.log('User is not a teacher, redirecting to teacher login...');
-    window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
+    window.open(`${VITE_BASE_URL}/teacher?redirect=${currentUrl}`, '_blank');
     return false;
   }
   
@@ -139,7 +140,7 @@ export const authGuardAsync = async (): Promise<boolean> => {
     if (!isAdmin) {
       console.log('Teacher does not have admin access in Firebase, redirecting to login with error...');
       const errorMessage = encodeURIComponent('You are not an admin. Admin access required.');
-      window.location.href = `${VITE_BASE_URL}/teacher?error=${errorMessage}&redirect=${currentUrl}`;
+      window.open(`${VITE_BASE_URL}/teacher?error=${errorMessage}&redirect=${currentUrl}`, '_blank');
       return false;
     }
     
@@ -151,7 +152,7 @@ export const authGuardAsync = async (): Promise<boolean> => {
     // Fallback to cookie check if Firebase fails
     if (!teacherData.admin) {
       const errorMessage = encodeURIComponent('You are not an admin. Admin access required.');
-      window.location.href = `${VITE_BASE_URL}/teacher?error=${errorMessage}&redirect=${currentUrl}`;
+      window.open(`${VITE_BASE_URL}/teacher?error=${errorMessage}&redirect=${currentUrl}`, '_blank');
       return false;
     }
     return true;
@@ -174,14 +175,14 @@ export const authGuard = (): boolean => {
   // No cookies found - redirect to teacher login
   if (!teacherData) {
     console.log('No teacher cookies found, redirecting to teacher login...');
-    window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
+    window.open(`${VITE_BASE_URL}/teacher?redirect=${currentUrl}`, '_blank');
     return false;
   }
   
   // Not a teacher - redirect to teacher login
   if (!teacherData.isTeacher) {
     console.log('User is not a teacher, redirecting to teacher login...');
-    window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
+    window.open(`${VITE_BASE_URL}/teacher?redirect=${currentUrl}`, '_blank');
     return false;
   }
   
@@ -189,7 +190,7 @@ export const authGuard = (): boolean => {
   if (!teacherData.admin) {
     console.log('Teacher does not have admin access in cookie, redirecting to login with error...');
     const errorMessage = encodeURIComponent('You are not an admin. Admin access required.');
-    window.location.href = `${VITE_BASE_URL}/teacher?error=${errorMessage}&redirect=${currentUrl}`;
+    window.open(`${VITE_BASE_URL}/teacher?error=${errorMessage}&redirect=${currentUrl}`, '_blank');
     return false;
   }
   
@@ -234,10 +235,10 @@ export const logout = () => {
     
     // Redirect to teacher login with logout message
     const logoutMessage = encodeURIComponent('You have been logged out successfully.');
-    window.location.href = `${VITE_BASE_URL}/teacher?message=${logoutMessage}`;
+    window.open(`${VITE_BASE_URL}/teacher?message=${logoutMessage}`, '_blank');
   } catch (error) {
     console.error('Error during logout:', error);
     // Force redirect even if clearing fails
-    window.location.href = `${VITE_BASE_URL}/teacher`;
+    window.open(`${VITE_BASE_URL}/teacher`, '_blank');
   }
 };
