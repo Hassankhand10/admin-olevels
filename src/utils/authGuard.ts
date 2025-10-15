@@ -3,6 +3,66 @@ import { VITE_BASE_URL } from '../config/constants';
 import { database } from '../config/firebase';
 import { ref, get } from 'firebase/database';
 
+// Function to show admin access denied page
+const showAdminAccessDeniedPage = () => {
+  document.body.innerHTML = `
+    <div style="
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: Arial, sans-serif;
+      background-color: #f5f5f5;
+    ">
+      <div style="
+        background: white;
+        padding: 40px;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        text-align: center;
+        max-width: 500px;
+      ">
+        <h2 style="color: #d32f2f; margin-bottom: 20px;">❌ Access Denied</h2>
+        <p style="color: #666; font-size: 18px; margin-bottom: 20px;">
+          You are not an admin. Admin access required.
+        </p>
+        <p style="color: #999; font-size: 14px;">
+          Redirecting to login page in <span id="countdown">30</span> seconds...
+        </p>
+        <div style="margin-top: 20px;">
+          <button onclick="window.location.href='${VITE_BASE_URL}/teacher'" 
+                  style="
+                    background: #1976d2;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 16px;
+                  ">
+            Go to Login Now
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  // Start countdown
+  let countdown = 30;
+  const countdownElement = document.getElementById('countdown');
+  const interval = setInterval(() => {
+    countdown--;
+    if (countdownElement) {
+      countdownElement.textContent = countdown.toString();
+    }
+    if (countdown <= 0) {
+      clearInterval(interval);
+      window.location.href = `${VITE_BASE_URL}/teacher`;
+    }
+  }, 1000);
+};
+
 // Teacher authentication interface
 interface TeacherAuth {
   id: number;
@@ -15,7 +75,6 @@ interface TeacherAuth {
   isTeacher: boolean;
 }
 
-// Cookie checking function
 export const checkTeacherCookies = (): TeacherAuth | null => {
   try {
     const cookies = document.cookie.split("; ");
@@ -33,13 +92,12 @@ export const checkTeacherCookies = (): TeacherAuth | null => {
       return null;
     }
     
-    // Decode the cookie data
-    const decodedData = decodeURIComponent(teacherCookie);
-    const teacherData: TeacherAuth = JSON.parse(decodedData);
+    const teacherData: TeacherAuth = JSON.parse(teacherCookie);
+    console.log('teacherData', teacherData);
     
     return teacherData;
   } catch (error) {
-    console.error('Error parsing teacher cookie:', error);
+    console.error('Error checking teacher cookies:', error);
     return null;
   }
 };
@@ -122,14 +180,16 @@ export const authGuardAsync = async (): Promise<boolean> => {
   // No cookies found - redirect to teacher login
   if (!teacherData) {
     console.log('No teacher cookies found, redirecting to teacher login...');
-    window.open(`${VITE_BASE_URL}/teacher?redirect=${currentUrl}`, '_blank');
+    console.log('Redirect URL:', `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`);
+    console.log('VITE_BASE_URL:', VITE_BASE_URL);
+    window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
     return false;
   }
   
   // Not a teacher - redirect to teacher login
   if (!teacherData.isTeacher) {
     console.log('User is not a teacher, redirecting to teacher login...');
-    window.open(`${VITE_BASE_URL}/teacher?redirect=${currentUrl}`, '_blank');
+    window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
     return false;
   }
   
@@ -138,9 +198,8 @@ export const authGuardAsync = async (): Promise<boolean> => {
     const isAdmin = await checkAdminStatusFromFirebase(teacherData.username);
     
     if (!isAdmin) {
-      console.log('Teacher does not have admin access in Firebase, redirecting to login with error...');
-      const errorMessage = encodeURIComponent('You are not an admin. Admin access required.');
-      window.open(`${VITE_BASE_URL}/teacher?error=${errorMessage}&redirect=${currentUrl}`, '_blank');
+      console.log('Teacher does not have admin access in Firebase, showing error message...');
+      showAdminAccessDeniedPage();
       return false;
     }
     
@@ -151,8 +210,7 @@ export const authGuardAsync = async (): Promise<boolean> => {
     console.error('Error checking admin status:', error);
     // Fallback to cookie check if Firebase fails
     if (!teacherData.admin) {
-      const errorMessage = encodeURIComponent('You are not an admin. Admin access required.');
-      window.open(`${VITE_BASE_URL}/teacher?error=${errorMessage}&redirect=${currentUrl}`, '_blank');
+      showAdminAccessDeniedPage();
       return false;
     }
     return true;
@@ -169,28 +227,26 @@ export const authGuard = (): boolean => {
   
   const teacherData = checkTeacherCookies();
   
-  // Get current URL for redirect after login
   const currentUrl = encodeURIComponent(window.location.href);
   
-  // No cookies found - redirect to teacher login
   if (!teacherData) {
     console.log('No teacher cookies found, redirecting to teacher login...');
-    window.open(`${VITE_BASE_URL}/teacher?redirect=${currentUrl}`, '_blank');
+    console.log('Redirect URL:', `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`);
+    console.log('VITE_BASE_URL:', VITE_BASE_URL);
+    window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
     return false;
   }
   
   // Not a teacher - redirect to teacher login
   if (!teacherData.isTeacher) {
     console.log('User is not a teacher, redirecting to teacher login...');
-    window.open(`${VITE_BASE_URL}/teacher?redirect=${currentUrl}`, '_blank');
+    window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
     return false;
   }
   
-  // For immediate redirect, use cookie data (Firebase check will be done in useAuthGuard)
   if (!teacherData.admin) {
-    console.log('Teacher does not have admin access in cookie, redirecting to login with error...');
-    const errorMessage = encodeURIComponent('You are not an admin. Admin access required.');
-    window.open(`${VITE_BASE_URL}/teacher?error=${errorMessage}&redirect=${currentUrl}`, '_blank');
+    console.log('Teacher does not have admin access in cookie, showing error message...');
+    showAdminAccessDeniedPage();
     return false;
   }
   
