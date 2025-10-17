@@ -43,9 +43,17 @@ export const fetchAssignments = async (topic: string): Promise<{ id: string; dat
 
   if (snapshot.exists()) {
     const assignments = snapshot.val();
-    return Object.entries(assignments)
-      .map(([id, data]) => ({ id, data: data as Assignment }))
+    console.log(`Fetched assignments for topic ${topic}:`, assignments);
+    
+    const filteredAssignments = Object.entries(assignments)
+      .map(([id, data]) => {
+        console.log(`Assignment ${id} data:`, data);
+        return { id, data: data as Assignment };
+      })
       .filter(item => item.data.selectedAssignmentCategory === 'WeeklyTest');
+    
+    console.log(`Filtered WeeklyTest assignments for topic ${topic}:`, filteredAssignments);
+    return filteredAssignments;
   }
   return [];
 };

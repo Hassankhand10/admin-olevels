@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { BookOpen, FileText, Users, CheckCircle } from 'lucide-react';
 import OLevelsLogo from '../assets/OLevels-logo-color.png';
 import { fetchAssignments, fetchStudentSubmissions, fetchTopics, updateSupervisionApproval, fetchStudentCategories } from '../services/firebaseService';
@@ -8,7 +7,6 @@ import toast, { Toaster } from 'react-hot-toast';
 import { GRADING_BASE_URL , API_BASE_URL} from '../config/constants';
 
 export const Dashboard = () => {
-  const navigate = useNavigate();
   const [activeTab] = useState<'weekly-test'>('weekly-test');
   const [courses, setCourses] = useState<{id: number, title: string}[]>([]);
   const [selectedCourse, setSelectedCourse] = useState<{id: number | 'all', title: string} | null>(null);
@@ -16,7 +14,7 @@ export const Dashboard = () => {
   const [filteredTopics, setFilteredTopics] = useState<{id: string, title: string}[]>([]);
   const [selectedTopic, setSelectedTopic] = useState<string>('');
   const [assignments, setAssignments] = useState<{ id: string; data: Assignment }[]>([]);
-  const [allAssignments, setAllAssignments] = useState<{[topicId: string]: { id: string; data: Assignment }[]}>({});
+  const [, setAllAssignments] = useState<{[topicId: string]: { id: string; data: Assignment }[]}>({});
   const [assignmentsByCourse, setAssignmentsByCourse] = useState<{[courseId: string]: Array<{
     topicId: string;
     topicName: string;
@@ -35,6 +33,27 @@ export const Dashboard = () => {
     submittedStudents: number;
     gradedStudents: number;
   }>>([]);
+  
+  // Unmarked Papers state
+  const [unmarkedPapers, setUnmarkedPapers] = useState<{
+    total: number;
+    deadlinePassed: number;
+    deadlineNotPassed: number;
+    papers: Array<{
+      topicId: string;
+      topicName: string;
+      assignmentTitle: string;
+      studentName: string;
+      submissionTime: string;
+      deadlinePassed: boolean;
+      gradingDeadline: string;
+    }>;
+  }>({
+    total: 0,
+    deadlinePassed: 0,
+    deadlineNotPassed: 0,
+    papers: []
+  });
   const [selectedAssignment, setSelectedAssignment] = useState<{ id: string; title: string } | null>(null);
   const [students, setStudents] = useState<StudentData>({});
   const [studentCategories, setStudentCategories] = useState<{[studentName: string]: {category: string}}>({});
@@ -52,6 +71,12 @@ export const Dashboard = () => {
   
   // Course filter for pending tests
   const [pendingCourseFilter, setPendingCourseFilter] = useState<string>('all');
+  
+  // Show urgent assignments (overdue or in progress grading deadlines)
+  const [showUrgentOnly, setShowUrgentOnly] = useState<boolean>(false);
+  
+  // Filter by deadline status
+  const [deadlineFilter, setDeadlineFilter] = useState<'all' | 'overdue' | 'progress'>('all');
   
   
 
@@ -203,6 +228,88 @@ export const Dashboard = () => {
     }
   };
 
+  const loadUnmarkedPapers = async (assignmentsData: {[topicId: string]: { id: string; data: Assignment }[]}, topicsData: {[key: string]: {course: any}}) => {
+    try {
+      const unmarkedPapersList: Array<{
+        topicId: string;
+        topicName: string;
+        assignmentTitle: string;
+        studentName: string;
+        submissionTime: string;
+        deadlinePassed: boolean;
+        gradingDeadline: string;
+      }> = [];
+
+      // Process assignments in batches to reduce API calls - only WeeklyTest assignments
+      const allAssignments = Object.entries(assignmentsData).flatMap(([topicId, topicAssignments]) =>
+        topicAssignments
+          .filter(assignment => assignment.data.selectedAssignmentCategory === 'WeeklyTest')
+          .map(assignment => ({ topicId, assignment }))
+      );
+
+      // Process in batches of 5 to avoid overwhelming the API
+      const batchSize = 5;
+      for (let i = 0; i < allAssignments.length; i += batchSize) {
+        const batch = allAssignments.slice(i, i + batchSize);
+        
+        const batchPromises = batch.map(async ({ topicId, assignment }) => {
+          try {
+            console.log(`Processing assignment: ${assignment.data.title}`, assignment.data);
+            console.log(`Grading deadline from database: ${assignment.data.gradingDeadline}`);
+            
+            const studentData = await fetchStudentSubmissions(topicId, assignment.data.title);
+            const topicName = topicsData[topicId]?.course?.name || topicId;
+            
+            // Use grading deadline from database
+            const gradingDeadline = new Date(assignment.data.gradingDeadline);
+            const currentDate = new Date();
+            const isGradingDeadlinePassed = currentDate > gradingDeadline;
+            
+            console.log(`Grading deadline parsed: ${gradingDeadline}, Current date: ${currentDate}, Is passed: ${isGradingDeadlinePassed}`);
+
+            Object.entries(studentData).forEach(([studentName, student]) => {
+              // Only include students who have submitted but not been graded
+              if (student.submission && !student.graded) {
+                unmarkedPapersList.push({
+                  topicId,
+                  topicName,
+                  assignmentTitle: assignment.data.title,
+                  studentName,
+                  submissionTime: student.submissionTime || '',
+                  deadlinePassed: isGradingDeadlinePassed,
+                  gradingDeadline: gradingDeadline.toISOString().split('T')[0]
+                });
+              }
+            });
+
+            return null; // This function doesn't return assignment data, just processes papers
+          } catch (error) {
+            console.error(`Error checking unmarked papers for assignment ${assignment.data.title} in topic ${topicId}:`, error);
+            return null;
+          }
+        });
+
+        await Promise.all(batchPromises);
+      }
+
+      // Calculate totals
+      const total = unmarkedPapersList.length;
+      const deadlinePassed = unmarkedPapersList.filter(paper => paper.deadlinePassed).length;
+      const deadlineNotPassed = total - deadlinePassed;
+
+      setUnmarkedPapers({
+        total,
+        deadlinePassed,
+        deadlineNotPassed,
+        papers: unmarkedPapersList
+      });
+      
+    } catch (error) {
+      console.error('Error loading unmarked papers:', error);
+      toast.error('Error loading unmarked papers');
+    }
+  };
+
   const loadAllAssignmentsFromAllTopics = async () => {
     try {
       const topicsData = await fetchTopics();
@@ -224,6 +331,9 @@ export const Dashboard = () => {
       
       // Load ungraded assignments after all assignments are loaded
       loadUngradedAssignments(allAssignmentsData, topicsData);
+      
+      // Load unmarked papers after all assignments are loaded
+      loadUnmarkedPapers(allAssignmentsData, topicsData);
       
       toast.success('All assignments loaded successfully');
     } catch (error) {
@@ -387,6 +497,17 @@ export const Dashboard = () => {
     return daysUntilDeadline > 0 && daysUntilDeadline <= 7; // Within 7 days
   };
 
+  // Check if grading deadline is overdue or in progress
+  const isGradingDeadlineOverdue = (gradingDeadline: string) => {
+    console.log(`Checking if overdue for grading deadline: ${gradingDeadline}`);
+    const deadline = new Date(gradingDeadline);
+    const now = new Date();
+    const isOverdue = now > deadline;
+    console.log(`Deadline: ${deadline}, Now: ${now}, Is overdue: ${isOverdue}`);
+    return isOverdue;
+  };
+
+
   // Filter assignments by course for pending tests section
   const getFilteredAssignmentsByCourse = () => {
     if (pendingCourseFilter === 'all') {
@@ -399,6 +520,54 @@ export const Dashboard = () => {
         filtered[courseId] = assignments;
       }
     });
+    return filtered;
+  };
+
+  // Get assignments with grading deadline overdue or in progress
+  const getUrgentAssignments = () => {
+    const urgent: {[courseId: string]: Array<any>} = {};
+    
+    Object.entries(assignmentsByCourse).forEach(([courseId, assignments]) => {
+      const urgentAssignments = assignments.filter(item => {
+        const isOverdue = isGradingDeadlineOverdue(item.assignment.data.gradingDeadline);
+        return isOverdue; // Only overdue assignments are urgent
+      });
+      
+      if (urgentAssignments.length > 0) {
+        urgent[courseId] = urgentAssignments;
+      }
+    });
+    
+    return urgent;
+  };
+
+  // Filter assignments by deadline status
+  const getFilteredAssignmentsByDeadline = (assignments: {[courseId: string]: Array<any>}) => {
+    if (deadlineFilter === 'all') {
+      return assignments;
+    }
+    
+    const filtered: {[courseId: string]: Array<any>} = {};
+    
+    Object.entries(assignments).forEach(([courseId, courseAssignments]) => {
+      const filteredAssignments = courseAssignments.filter(item => {
+        const isOverdue = isGradingDeadlineOverdue(item.assignment.data.gradingDeadline);
+        
+        switch (deadlineFilter) {
+          case 'overdue':
+            return isOverdue;
+          case 'progress':
+            return !isOverdue; // All non-overdue assignments
+          default:
+            return true;
+        }
+      });
+      
+      if (filteredAssignments.length > 0) {
+        filtered[courseId] = filteredAssignments;
+      }
+    });
+    
     return filtered;
   };
 
@@ -427,6 +596,32 @@ export const Dashboard = () => {
   const studentCount = Object.keys(students).length;
   const submittedCount = Object.values(students).filter((s: any) => s.submission).length;
   const gradedCount = Object.values(students).filter((s: any) => s.graded).length;
+
+  const getMarkedPapersData = () => {
+    const allAssignments = Object.values(assignmentsByCourse).flat();
+    let totalMarked = 0;
+    let markedOverdue = 0;
+    let markedOnTime = 0;
+
+    allAssignments.forEach(item => {
+      const isOverdue = isGradingDeadlineOverdue(item.assignment.data.gradingDeadline);
+      const markedCount = item.gradedStudents;
+      
+      totalMarked += markedCount;
+      if (isOverdue) {
+        markedOverdue += markedCount;
+      } else {
+        markedOnTime += markedCount;
+      }
+    });
+
+    return {
+      total: totalMarked,
+      overdue: markedOverdue,
+      onTime: markedOnTime
+    };
+  };
+
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -461,20 +656,32 @@ export const Dashboard = () => {
                   Paper Marking Dashboard - Course Overview
                 </h2>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   
                   {/* Unmarked Count */}
                   <div className="bg-gradient-to-br from-orange-50 to-yellow-50 border border-orange-200 rounded-xl p-6 hover:shadow-lg transition-all duration-200">
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-lg font-semibold text-orange-800">Unmarked Papers</h3>
                       <div className="bg-orange-100 text-orange-800 px-3 py-1 rounded-full text-sm font-bold">
-                        {ungradedAssignments.length}
+                        {unmarkedPapers.total}
                       </div>
                     </div>
                     <p className="text-sm text-orange-700 mb-4">Weekly tests pending marking</p>
-                    <div className="text-xs text-orange-600">
-                      <p>📚 Across {Object.keys(assignmentsByCourse).length} courses</p>
-                      <p>📝 Ready for marking</p>
+                    <div className="text-xs text-orange-600 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-1">
+                          <span className="text-red-500">⚠️</span>
+                          <span>Overdue</span>
+                        </span>
+                        <span className="font-bold text-red-600">{unmarkedPapers.deadlinePassed}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-1">
+                          <span className="text-yellow-500">⏰</span>
+                          <span>On Time</span>
+                        </span>
+                        <span className="font-bold text-yellow-600">{unmarkedPapers.deadlineNotPassed}</span>
+                      </div>
                     </div>
                   </div>
 
@@ -483,7 +690,7 @@ export const Dashboard = () => {
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-lg font-semibold text-green-800">Marked Papers</h3>
                       <div className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-bold">
-                        {Object.values(assignmentsByCourse).flat().reduce((sum, item) => sum + item.gradedStudents, 0)}
+                        {getMarkedPapersData().total}
                       </div>
                     </div>
                     <p className="text-sm text-green-700 mb-4">Papers already marked</p>
@@ -494,19 +701,31 @@ export const Dashboard = () => {
                   </div>
 
                   {/* Total Papers */}
-                  <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-6 hover:shadow-lg transition-all duration-200">
+                  {/* <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-6 hover:shadow-lg transition-all duration-200">
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-lg font-semibold text-blue-800">Total Papers</h3>
                       <div className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-bold">
-                        {Object.values(assignmentsByCourse).flat().reduce((sum, item) => sum + item.submittedStudents, 0)}
+                        {getTotalPapersData().total}
                       </div>
                     </div>
                     <p className="text-sm text-blue-700 mb-4">All submitted papers</p>
-                    <div className="text-xs text-blue-600">
-                      <p>📚 Course-wise breakdown</p>
-                      <p>📝 Weekly test submissions</p>
+                    <div className="text-xs text-blue-600 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-1">
+                          <span className="text-red-500">⚠️</span>
+                          <span>Overdue</span>
+                        </span>
+                        <span className="font-bold text-red-600">{getTotalPapersData().overdue}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-1">
+                          <span className="text-yellow-500">⏰</span>
+                          <span>On Time</span>
+                        </span>
+                        <span className="font-bold text-yellow-600">{getTotalPapersData().onTime}</span>
+                      </div>
                     </div>
-                  </div>
+                  </div> */}
 
                 </div>
               </div>
@@ -523,22 +742,64 @@ export const Dashboard = () => {
                 )}
               </h2>
               
-              {/* Course Filter */}
-              <div className="mb-6">
+              {/* Filters */}
+              <div className="mb-6 space-y-4">
+                {/* Deadline Status Filter */}
                 <div className="flex items-center gap-3">
-                  <label className="text-sm font-medium text-gray-700">Filter by Course:</label>
+                  <label className="text-sm font-medium text-gray-700">Filter by Deadline Status:</label>
                   <select
-                    value={pendingCourseFilter}
-                    onChange={(e) => setPendingCourseFilter(e.target.value)}
+                    value={deadlineFilter}
+                    onChange={(e) => setDeadlineFilter(e.target.value as 'all' | 'overdue' | 'progress')}
                     className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#b30104] focus:border-transparent outline-none text-sm bg-white"
                   >
-                    <option value="all">All Courses</option>
-                    {courses.map(course => (
-                      <option key={course.id} value={course.id}>
-                        {course.title}
-                      </option>
-                    ))}
+                    <option value="all">All Assignments</option>
+                    <option value="overdue">⚠️ Overdue</option>
+                    <option value="progress">📋 On TIme</option>
                   </select>
+                  {deadlineFilter !== 'all' && (
+                    <span className="text-xs text-gray-600 font-medium">
+                      {deadlineFilter === 'overdue' && "Showing assignments past grading deadline"}
+                      {deadlineFilter === 'progress' && "Showing assignments that need grading"}
+                    </span>
+                  )}
+                </div>
+
+                {/* Course Filter and Urgent Toggle */}
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                  <div className="flex items-center gap-3">
+                    <label className="text-sm font-medium text-gray-700">Filter by Course:</label>
+                    <select
+                      value={pendingCourseFilter}
+                      onChange={(e) => setPendingCourseFilter(e.target.value)}
+                      className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#b30104] focus:border-transparent outline-none text-sm bg-white"
+                    >
+                      <option value="all">All Courses</option>
+                      {courses.map(course => (
+                        <option key={course.id} value={course.id}>
+                          {course.title}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  
+                  {/* Urgent Assignments Toggle */}
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setShowUrgentOnly(!showUrgentOnly)}
+                      className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${
+                        showUrgentOnly
+                          ? 'bg-red-100 text-red-800 border border-red-200 hover:bg-red-200'
+                          : 'bg-gray-100 text-gray-700 border border-gray-200 hover:bg-gray-200'
+                      }`}
+                    >
+                      {showUrgentOnly ? '⚠️ Overdue Only' : '📋 All Assignments'}
+                    </button>
+                    {showUrgentOnly && (
+                      <span className="text-xs text-red-600 font-medium">
+                        Showing only overdue assignments
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
               
@@ -547,9 +808,9 @@ export const Dashboard = () => {
                   <div className="w-8 h-8 border-2 border-[#b30104] border-t-transparent rounded-full animate-spin"></div>
                   <span className="ml-3 text-gray-600">Loading assignments...</span>
                 </div>
-              ) : Object.keys(getFilteredAssignmentsByCourse()).length > 0 ? (
+              ) : Object.keys(getFilteredAssignmentsByDeadline(showUrgentOnly ? getUrgentAssignments() : getFilteredAssignmentsByCourse())).length > 0 ? (
                 <div className="space-y-8">
-                  {Object.entries(getFilteredAssignmentsByCourse()).map(([courseId, courseAssignments]) => {
+                  {Object.entries(getFilteredAssignmentsByDeadline(showUrgentOnly ? getUrgentAssignments() : getFilteredAssignmentsByCourse())).map(([courseId, courseAssignments]) => {
                     const courseName = courses.find(c => c.id === Number(courseId))?.title || `Course ${courseId}`;
                     const ungradedCount = courseAssignments.length;
                     
@@ -579,9 +840,17 @@ export const Dashboard = () => {
                                 <h4 className="font-bold text-base text-gray-800 group-hover:text-orange-800 transition-colors">
                                   {item.assignment.data.title}
                                 </h4>
-                                <span className="bg-orange-100 text-orange-800 text-xs px-2 py-1 rounded-full font-medium">
-                                  Needs Grading
-                                </span>
+                                <div className="flex flex-col gap-1">
+                                  {isGradingDeadlineOverdue(item.assignment.data.gradingDeadline) ? (
+                                    <span className="bg-red-100 text-red-800 text-xs px-2 py-1 rounded-full font-medium">
+                                      ⚠️ Overdue
+                                    </span>
+                                  ) : (
+                                    <span className="bg-orange-100 text-orange-800 text-xs px-2 py-1 rounded-full font-medium">
+                                      📋 Needs Grading
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                               
                               <div className="space-y-1 text-xs text-gray-600">
@@ -599,7 +868,11 @@ export const Dashboard = () => {
                                 </div>
                                 <div className="flex items-center gap-1">
                                   <span className="text-orange-600">📅</span>
-                                  <span>{formatDeadline(item.assignment.data.deadline)}</span>
+                                  <span>Assignment: {formatDeadline(item.assignment.data.deadline)}</span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="text-orange-600">⏰</span>
+                                  <span>Grading: {formatDeadline(item.assignment.data.gradingDeadline)}</span>
                                 </div>
                               </div>
 
@@ -648,7 +921,14 @@ export const Dashboard = () => {
                         <FileText className="w-8 h-8 text-orange-600" />
                       </div>
                       <h3 className="text-lg font-semibold text-gray-700 mb-2">No Results Found</h3>
-                      <p className="text-gray-500">No pending assignments found for the selected course. Try selecting a different course or "All Courses".</p>
+                      <p className="text-gray-500">
+                        {showUrgentOnly 
+                          ? "No overdue assignments found. All grading deadlines are on track!"
+                          : deadlineFilter !== 'all'
+                            ? `No ${deadlineFilter === 'overdue' ? 'overdue' : 'needs grading'} assignments found. Try selecting a different filter or course.`
+                            : "No pending assignments found for the selected course. Try selecting a different course or 'All Courses'."
+                        }
+                      </p>
                     </>
                   )}
                 </div>

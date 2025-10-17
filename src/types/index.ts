@@ -1,6 +1,7 @@
 export interface Assignment {
   title: string;
   deadline: string;
+  gradingDeadline: string;
   totalMarks: string;
   weightage: number;
   selectedAssignmentCategory: string;
