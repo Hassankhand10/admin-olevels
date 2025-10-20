@@ -1298,7 +1298,7 @@ export const Dashboard = () => {
               )}
 
               {/* Course-wise Ungraded Assignments Section */}
-              <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100/50 p-8 hover:shadow-2xl transition-all duration-300">
+              <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100/50 p-8 hover:shadow-2xl transition-all duration-300 max-h-[2000px] overflow-y-auto">
               <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-3">
                 <div className="bg-gradient-to-br from-[#b30104] to-[#7a0103] p-2 rounded-lg shadow-lg">
                   <CheckCircle className="w-6 h-6 text-white" />
