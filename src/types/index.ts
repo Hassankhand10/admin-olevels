@@ -20,6 +20,9 @@ export interface StudentSubmission {
   supervisionApprovalDate?: number;
   supervisionVideoUrl?: string;
   category?: string;
+  gradedBy?: string;
+  gradedAt?: string;
+  gradedByTeacher?: string;
   attachments?: Array<{
     name: string;
     url: string;

@@ -78,6 +78,48 @@ export const Dashboard = () => {
   // Filter by deadline status
   const [deadlineFilter, setDeadlineFilter] = useState<'all' | 'overdue' | 'progress'>('all');
   
+  // Teacher grading report state
+  const [teacherGradingReport, setTeacherGradingReport] = useState<{
+    [teacherName: string]: {
+      totalGraded: number;
+      assignments: Array<{
+        assignmentTitle: string;
+        topicName: string;
+        gradedCount: number;
+        lastGraded: string;
+        topicId: string;
+        assignmentId: string;
+      }>;
+    };
+  }>({});
+  const [loadingTeacherReport, setLoadingTeacherReport] = useState(false);
+  
+  // Selected assignment details state
+  const [selectedAssignmentDetails, setSelectedAssignmentDetails] = useState<{
+    teacherName: string;
+    assignmentTitle: string;
+    topicName: string;
+    students: Array<{
+      studentName: string;
+      marks: number;
+      feedback: string;
+      gradedAt: string;
+    }>;
+  } | null>(null);
+  
+  // Teacher search state
+  const [teacherSearchTerm, setTeacherSearchTerm] = useState('');
+  
+  // Date filter state for teacher grading report
+  const [teacherReportDateFilter, setTeacherReportDateFilter] = useState<{
+    startDate: string;
+    endDate: string;
+  }>({
+    startDate: '',
+    endDate: ''
+  });
+  
+  
   
 
   useEffect(() => {
@@ -85,6 +127,22 @@ export const Dashboard = () => {
     loadAllTopics();
     loadAllAssignmentsFromAllTopics();
   }, []);
+
+  useEffect(() => {
+    // Load teacher grading report when component mounts
+    loadTeacherGradingReport();
+  }, []);
+
+  // Auto-refresh teacher grading report when date filters change
+  useEffect(() => {
+    if (teacherReportDateFilter.startDate || teacherReportDateFilter.endDate) {
+      // Only refresh if we have data already loaded
+      if (Object.keys(teacherGradingReport).length > 0) {
+        // The filtering is handled by getFilteredTeachers(), no need to reload data
+        // This effect just ensures the UI updates when date filters change
+      }
+    }
+  }, [teacherReportDateFilter]);
 
   useEffect(() => {
     if (selectedCourse) {
@@ -254,8 +312,6 @@ export const Dashboard = () => {
         
         const batchPromises = batch.map(async ({ topicId, assignment }) => {
           try {
-            console.log(`Processing assignment: ${assignment.data.title}`, assignment.data);
-            console.log(`Grading deadline from database: ${assignment.data.gradingDeadline}`);
             
             const studentData = await fetchStudentSubmissions(topicId, assignment.data.title);
             const topicName = topicsData[topicId]?.course?.name || topicId;
@@ -265,7 +321,6 @@ export const Dashboard = () => {
             const currentDate = new Date();
             const isGradingDeadlinePassed = currentDate > gradingDeadline;
             
-            console.log(`Grading deadline parsed: ${gradingDeadline}, Current date: ${currentDate}, Is passed: ${isGradingDeadlinePassed}`);
 
             Object.entries(studentData).forEach(([studentName, student]) => {
               // Only include students who have submitted but not been graded
@@ -499,11 +554,9 @@ export const Dashboard = () => {
 
   // Check if grading deadline is overdue or in progress
   const isGradingDeadlineOverdue = (gradingDeadline: string) => {
-    console.log(`Checking if overdue for grading deadline: ${gradingDeadline}`);
     const deadline = new Date(gradingDeadline);
     const now = new Date();
     const isOverdue = now > deadline;
-    console.log(`Deadline: ${deadline}, Now: ${now}, Is overdue: ${isOverdue}`);
     return isOverdue;
   };
 
@@ -622,6 +675,263 @@ export const Dashboard = () => {
     };
   };
 
+  // Load ALL assignments including 100% graded ones for teacher report
+  const loadAllAssignmentsForTeacherReport = async () => {
+    try {
+      const topicsData = await fetchTopics();
+      const allAssignmentsData: {[topicId: string]: { id: string; data: Assignment }[]} = {};
+      
+      // Load assignments from all topics
+      const assignmentPromises = Object.keys(topicsData).map(async (topicId) => {
+        try {
+          const assignments = await fetchAssignments(topicId);
+          allAssignmentsData[topicId] = assignments;
+        } catch (error) {
+          console.error(`Error loading assignments for topic ${topicId}:`, error);
+          allAssignmentsData[topicId] = [];
+        }
+      });
+
+      await Promise.all(assignmentPromises);
+      
+      // Convert to flat array with all assignments (including 100% graded)
+      const allAssignmentsFlat: Array<{
+        topicId: string;
+        topicName: string;
+        assignment: { id: string; data: Assignment };
+        totalStudents: number;
+        submittedStudents: number;
+        gradedStudents: number;
+      }> = [];
+
+      const batchSize = 5;
+      for (const [topicId, assignments] of Object.entries(allAssignmentsData)) {
+        for (let i = 0; i < assignments.length; i += batchSize) {
+          const batch = assignments.slice(i, i + batchSize);
+          
+          const batchPromises = batch.map(async (assignment) => {
+            try {
+              const studentData = await fetchStudentSubmissions(topicId, assignment.data.title);
+              const studentCount = Object.keys(studentData).length;
+              
+              let submittedCount = 0;
+              let gradedCount = 0;
+
+              Object.values(studentData).forEach((student: any) => {
+                if (student.submission) {
+                  submittedCount++;
+                  if (student.graded) {
+                    gradedCount++;
+                  }
+                }
+              });
+
+              // Include ALL assignments (including 100% graded)
+              return {
+                topicId,
+                topicName: topicsData[topicId]?.course?.name || topicId,
+                assignment,
+                totalStudents: studentCount,
+                submittedStudents: submittedCount,
+                gradedStudents: gradedCount
+              };
+            } catch (error) {
+              console.error(`Error checking assignment ${assignment.data.title} in topic ${topicId}:`, error);
+              return null;
+            }
+          });
+
+          const batchResults = await Promise.all(batchPromises);
+          allAssignmentsFlat.push(...batchResults.filter(item => item !== null));
+        }
+      }
+
+      return allAssignmentsFlat;
+    } catch (error) {
+      console.error('Error loading all assignments for teacher report:', error);
+      return [];
+    }
+  };
+
+  // Load teacher grading report
+  const loadTeacherGradingReport = async () => {
+    setLoadingTeacherReport(true);
+    try {
+      const report: {[teacherName: string]: any} = {};
+      const allAssignments = await loadAllAssignmentsForTeacherReport();
+      
+      // Filter only WeeklyTest assignments
+      const weeklyTestAssignments = allAssignments.filter(item => 
+        item.assignment.data.selectedAssignmentCategory === 'WeeklyTest'
+      );
+      
+      
+      // Process assignments in batches
+      const batchSize = 5;
+      for (let i = 0; i < weeklyTestAssignments.length; i += batchSize) {
+        const batch = weeklyTestAssignments.slice(i, i + batchSize);
+        
+        const batchPromises = batch.map(async (item) => {
+          try {
+            const studentData = await fetchStudentSubmissions(item.topicId, item.assignment.data.title);
+            const topicName = allTopics[item.topicId]?.name || item.topicId;
+            
+            const gradedStudents = Object.entries(studentData).filter(([, student]) => student.graded);
+            
+              if (gradedStudents.length > 0) {
+                
+                Object.entries(studentData).forEach(([, student]) => {
+              if (student.graded) {
+                if (student.gradedByTeacher) {
+                  const teacherName = student.gradedByTeacher;
+                  const gradedAt = student.gradedAt || new Date().toISOString();
+                
+                if (!report[teacherName]) {
+                  report[teacherName] = {
+                    totalGraded: 0,
+                    assignments: []
+                  };
+                }
+                
+                report[teacherName].totalGraded++;
+                
+                // Track assignments
+                let assignmentEntry = report[teacherName].assignments.find(
+                  (a: any) => a.assignmentTitle === item.assignment.data.title && a.topicName === topicName
+                );
+                
+                if (!assignmentEntry) {
+                  assignmentEntry = {
+                    assignmentTitle: item.assignment.data.title,
+                    topicName: topicName,
+                    gradedCount: 0,
+                    lastGraded: gradedAt,
+                    topicId: item.topicId,
+                    assignmentId: item.assignment.id
+                  };
+                  report[teacherName].assignments.push(assignmentEntry);
+                }
+                
+                assignmentEntry.gradedCount++;
+                if (new Date(gradedAt) > new Date(assignmentEntry.lastGraded)) {
+                  assignmentEntry.lastGraded = gradedAt;
+                }
+                } else {
+                }
+              }
+              });
+            } else {
+            }
+          } catch (error) {
+            console.error(`Error processing assignment ${item.assignment.data.title}:`, error);
+          }
+        });
+        
+        await Promise.all(batchPromises);
+      }
+      
+      setTeacherGradingReport(report);
+    } catch (error) {
+      console.error('Error loading teacher grading report:', error);
+      toast.error('Error loading teacher grading report');
+    } finally {
+      setLoadingTeacherReport(false);
+    }
+  };
+
+  // Load assignment details when clicked
+  const loadAssignmentDetails = async (teacherName: string, assignmentTitle: string, topicName: string, topicId: string) => {
+    try {
+      const studentData = await fetchStudentSubmissions(topicId, assignmentTitle);
+      
+      // Filter students graded by this teacher
+      const gradedStudents = Object.entries(studentData)
+        .filter(([, student]) => student.graded && student.gradedByTeacher === teacherName)
+        .map(([studentName, student]) => ({
+          studentName,
+          marks: student.marks || 0,
+          feedback: student.feedback || '',
+          gradedAt: student.gradedAt || new Date().toISOString()
+        }));
+
+      setSelectedAssignmentDetails({
+        teacherName,
+        assignmentTitle,
+        topicName,
+        students: gradedStudents
+      });
+    } catch (error) {
+      console.error('Error loading assignment details:', error);
+      toast.error('Error loading assignment details');
+    }
+  };
+
+  // Filter teachers based on search term and date range
+  const getFilteredTeachers = () => {
+    let filteredTeachers = Object.entries(teacherGradingReport) as Array<[string, {
+      totalGraded: number;
+      assignments: Array<{
+        assignmentTitle: string;
+        topicName: string;
+        gradedCount: number;
+        lastGraded: string;
+        topicId: string;
+        assignmentId: string;
+      }>;
+    }]>;
+    
+    // Filter by search term
+    if (teacherSearchTerm.trim()) {
+      filteredTeachers = filteredTeachers.filter(([teacherName]) =>
+        teacherName.toLowerCase().includes(teacherSearchTerm.toLowerCase())
+      );
+    }
+    
+    // Filter by date range
+    if (teacherReportDateFilter.startDate || teacherReportDateFilter.endDate) {
+      filteredTeachers = filteredTeachers.map(([teacherName, data]) => {
+        const filteredAssignments = data.assignments.filter(assignment => {
+          const gradedDate = new Date(assignment.lastGraded);
+          const startDate = teacherReportDateFilter.startDate ? new Date(teacherReportDateFilter.startDate) : null;
+          const endDate = teacherReportDateFilter.endDate ? new Date(teacherReportDateFilter.endDate) : null;
+          
+          let isInRange = true;
+          
+          if (startDate) {
+            isInRange = isInRange && gradedDate >= startDate;
+          }
+          
+          if (endDate) {
+            // Add one day to end date to include the entire end date
+            const endDatePlusOne = new Date(endDate);
+            endDatePlusOne.setDate(endDatePlusOne.getDate() + 1);
+            isInRange = isInRange && gradedDate < endDatePlusOne;
+          }
+          
+          return isInRange;
+        });
+        
+        return [teacherName, {
+          ...data,
+          assignments: filteredAssignments,
+          totalGraded: filteredAssignments.reduce((sum, assignment) => sum + assignment.gradedCount, 0)
+        }] as [string, {
+          totalGraded: number;
+          assignments: Array<{
+            assignmentTitle: string;
+            topicName: string;
+            gradedCount: number;
+            lastGraded: string;
+            topicId: string;
+            assignmentId: string;
+          }>;
+        }];
+      }).filter(([, data]) => data.assignments.length > 0);
+    }
+    
+    return filteredTeachers;
+  };
+
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -729,6 +1039,263 @@ export const Dashboard = () => {
 
                 </div>
               </div>
+
+              {/* Teacher Grading Report Section */}
+              <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100/50 p-8 hover:shadow-2xl transition-all duration-300 max-h-[1500px] overflow-y-auto">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-xl font-bold text-gray-800 flex items-center gap-3">
+                    <div className="bg-gradient-to-br from-[#b30104] to-[#7a0103] p-2 rounded-lg shadow-lg">
+                      <Users className="w-6 h-6 text-white" />
+                    </div>
+                    Teacher Grading Report
+                    {loadingTeacherReport && (
+                      <div className="w-5 h-5 border-2 border-[#b30104] border-t-transparent rounded-full animate-spin"></div>
+                    )}
+                  </h2>
+                  <button
+                    onClick={loadTeacherGradingReport}
+                    disabled={loadingTeacherReport}
+                    className="px-4 py-2 bg-[#b30104] text-white rounded-lg hover:bg-[#7a0103] transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+                  >
+                    {loadingTeacherReport ? 'Loading...' : 'Refresh Report'}
+                  </button>
+                </div>
+                
+                {/* Teacher Search Bar and Date Filter */}
+                <div className="mb-6 space-y-4">
+                  {/* Teacher Search Bar */}
+                  <div className="relative">
+                    <input
+                      type="text"
+                      placeholder="Search teachers by name..."
+                      value={teacherSearchTerm}
+                      onChange={(e) => setTeacherSearchTerm(e.target.value)}
+                      className="w-full px-4 py-3 pl-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#b30104] focus:border-transparent outline-none text-sm bg-white"
+                    />
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                    </div>
+                    {teacherSearchTerm && (
+                      <button
+                        onClick={() => setTeacherSearchTerm('')}
+                        className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                      >
+                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  
+                  {/* Date Filter */}
+                  <div className="flex flex-col sm:flex-row gap-4">
+                    <div className="flex-1">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Start Date
+                        {(teacherReportDateFilter.startDate || teacherReportDateFilter.endDate) && (
+                          <span className="ml-2 text-xs text-[#b30104] font-semibold">(Filter Active)</span>
+                        )}
+                      </label>
+                      <input
+                        type="date"
+                        value={teacherReportDateFilter.startDate}
+                        onChange={(e) => setTeacherReportDateFilter(prev => ({
+                          ...prev,
+                          startDate: e.target.value
+                        }))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#b30104] focus:border-transparent outline-none text-sm bg-white"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        End Date
+                        {(teacherReportDateFilter.startDate || teacherReportDateFilter.endDate) && (
+                          <span className="ml-2 text-xs text-[#b30104] font-semibold">(Filter Active)</span>
+                        )}
+                      </label>
+                      <input
+                        type="date"
+                        value={teacherReportDateFilter.endDate}
+                        onChange={(e) => setTeacherReportDateFilter(prev => ({
+                          ...prev,
+                          endDate: e.target.value
+                        }))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#b30104] focus:border-transparent outline-none text-sm bg-white"
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <button
+                        onClick={() => setTeacherReportDateFilter({ startDate: '', endDate: '' })}
+                        className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm font-medium"
+                      >
+                        Clear Dates
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {/* Date Filter Info */}
+                  {(teacherReportDateFilter.startDate || teacherReportDateFilter.endDate) && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                      <div className="flex items-center gap-2">
+                        <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span className="text-sm text-blue-800 font-medium">
+                          Showing grading data from{' '}
+                          {teacherReportDateFilter.startDate 
+                            ? new Date(teacherReportDateFilter.startDate).toLocaleDateString() 
+                            : 'beginning'
+                          } to{' '}
+                          {teacherReportDateFilter.endDate 
+                            ? new Date(teacherReportDateFilter.endDate).toLocaleDateString() 
+                            : 'now'
+                          }
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                
+                {loadingTeacherReport ? (
+                  <div className="flex items-center justify-center py-12">
+                    <div className="w-8 h-8 border-2 border-[#b30104] border-t-transparent rounded-full animate-spin"></div>
+                    <span className="ml-3 text-gray-600">Loading teacher grading report...</span>
+                  </div>
+                ) : Object.keys(teacherGradingReport).length > 0 ? (
+                  getFilteredTeachers().length > 0 ? (
+                    <div className="space-y-6">
+                      {getFilteredTeachers()
+                        .sort(([,a], [,b]) => b.totalGraded - a.totalGraded)
+                        .map(([teacherName, data]) => (
+                        <div key={teacherName} className="border border-gray-200 rounded-xl p-6 bg-gradient-to-br from-gray-50 to-white">
+                          <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center gap-3">
+                              <div className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-bold">
+                                {data.totalGraded}
+                              </div>
+                              <h3 className="text-lg font-bold text-gray-800">{teacherName}</h3>
+                            </div>
+                          </div>
+                          
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {data.assignments.map((assignment, index) => (
+                              <div 
+                                key={index} 
+                                className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md hover:border-blue-300 cursor-pointer transition-all duration-200"
+                                onClick={() => loadAssignmentDetails(teacherName, assignment.assignmentTitle, assignment.topicName, assignment.topicId)}
+                              >
+                                <div className="flex items-start justify-between mb-2">
+                                  <h4 className="font-semibold text-gray-800 text-sm">
+                                    {assignment.assignmentTitle}
+                                  </h4>
+                                  <span className="bg-green-100 text-green-800 text-xs px-2 py-1 rounded-full font-medium">
+                                    {assignment.gradedCount} graded
+                                  </span>
+                                </div>
+                                <div className="text-xs text-gray-600 space-y-1">
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-blue-600">📚</span>
+                                    <span>{assignment.topicName}</span>
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-green-600">⏰</span>
+                                    <span>Last: {new Date(assignment.lastGraded).toLocaleDateString()}</span>
+                                  </div>
+                                  <div className="text-blue-600 text-xs font-medium mt-2">
+                                    Click to view students
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-12">
+                      <div className="bg-gray-100 p-4 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
+                        <svg className="w-8 h-8 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                        </svg>
+                      </div>
+                      <h3 className="text-lg font-semibold text-gray-700 mb-2">No Teachers Found</h3>
+                      <p className="text-gray-500">No teachers match your search term "{teacherSearchTerm}"</p>
+                      <button
+                        onClick={() => setTeacherSearchTerm('')}
+                        className="mt-3 px-4 py-2 bg-[#b30104] text-white rounded-lg hover:bg-[#7a0103] transition-colors text-sm font-medium"
+                      >
+                        Clear Search
+                      </button>
+                    </div>
+                  )
+                ) : (
+                  <div className="text-center py-12">
+                    <div className="bg-gray-100 p-4 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
+                      <Users className="w-8 h-8 text-gray-600" />
+                    </div>
+                    <h3 className="text-lg font-semibold text-gray-700 mb-2">No Grading Data Found</h3>
+                    <p className="text-gray-500">No teacher grading information available at the moment.</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Assignment Details Modal */}
+              {selectedAssignmentDetails && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                  <div className="bg-white rounded-xl max-w-4xl w-full max-h-[80vh] overflow-hidden">
+                    <div className="flex items-center justify-between p-6 border-b border-gray-200">
+                      <h3 className="text-xl font-bold text-gray-800">
+                        {selectedAssignmentDetails.teacherName} - {selectedAssignmentDetails.assignmentTitle}
+                      </h3>
+                      <button
+                        onClick={() => setSelectedAssignmentDetails(null)}
+                        className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    
+                    <div className="p-6 overflow-y-auto max-h-[60vh]">
+                      <div className="mb-4">
+                        <p className="text-sm text-gray-600">
+                          <span className="font-medium">Topic:</span> {selectedAssignmentDetails.topicName}
+                        </p>
+                        <p className="text-sm text-gray-600">
+                          <span className="font-medium">Total Students Graded:</span> {selectedAssignmentDetails.students.length}
+                        </p>
+                      </div>
+                      
+                      
+                      <div className="space-y-4">
+                        {selectedAssignmentDetails.students.map((student, index) => (
+                          <div key={index} className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+                            <div className="flex items-center justify-between mb-2">
+                              <h4 className="font-semibold text-gray-800">{student.studentName}</h4>
+                              <div className="flex items-center gap-4">
+                                <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded-full text-sm font-medium">
+                                  {student.marks} marks
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {new Date(student.gradedAt).toLocaleDateString()}
+                                </span>
+                              </div>
+                            </div>
+                            {student.feedback && (
+                              <div className="mt-2">
+                                <p className="text-sm text-gray-700">
+                                  <span className="font-medium">Feedback:</span> {student.feedback}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Course-wise Ungraded Assignments Section */}
               <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100/50 p-8 hover:shadow-2xl transition-all duration-300">

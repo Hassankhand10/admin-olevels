@@ -4,7 +4,6 @@ import { Assignment, StudentData } from '../types';
 
 export const fetchTopics = async (): Promise<{[key: string]: {course: any, name?: string}}> => {
   try {
-    console.log('Fetching topics from Firebase path: topics');
     const assignmentsRef = ref(database, 'topics');
     
     // Get snapshot to access keys and course objects only
@@ -12,7 +11,6 @@ export const fetchTopics = async (): Promise<{[key: string]: {course: any, name?
 
     if (snapshot.exists()) {
       const data = snapshot.val();
-      console.log('Firebase data received:', data);
       
       // Extract keys, course objects, and topic names for each topic
       const topicsWithCourses: {[key: string]: {course: any, name?: string}} = {};
@@ -21,11 +19,10 @@ export const fetchTopics = async (): Promise<{[key: string]: {course: any, name?
         const topicData = data[topicKey];
         topicsWithCourses[topicKey] = {
           course: topicData.course || null,
-          name: topicData.name || topicKey // Use topic name if available, otherwise use key
+          name: topicData.name || topicKey
         };
       });
       
-      console.log('Topics extracted (keys + course + name):', topicsWithCourses);
       return topicsWithCourses;
     } else {
       console.log('No data found at topics path');
@@ -43,16 +40,13 @@ export const fetchAssignments = async (topic: string): Promise<{ id: string; dat
 
   if (snapshot.exists()) {
     const assignments = snapshot.val();
-    console.log(`Fetched assignments for topic ${topic}:`, assignments);
     
     const filteredAssignments = Object.entries(assignments)
       .map(([id, data]) => {
-        console.log(`Assignment ${id} data:`, data);
         return { id, data: data as Assignment };
       })
       .filter(item => item.data.selectedAssignmentCategory === 'WeeklyTest');
     
-    console.log(`Filtered WeeklyTest assignments for topic ${topic}:`, filteredAssignments);
     return filteredAssignments;
   }
   return [];

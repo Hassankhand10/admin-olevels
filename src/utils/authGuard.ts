@@ -93,7 +93,6 @@ export const checkTeacherCookies = (): TeacherAuth | null => {
     }
     
     const teacherData: TeacherAuth = JSON.parse(teacherCookie);
-    console.log('teacherData', teacherData);
     
     return teacherData;
   } catch (error) {
@@ -124,12 +123,10 @@ export const checkAdminStatusFromFirebase = async (username: string): Promise<bo
 export const isAuthenticatedAdminAsync = async (): Promise<boolean> => {
   // Skip authentication check on localhost for development
   if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    console.log('Development mode - skipping authentication check');
     return true;
   }
   
   const teacherData = checkTeacherCookies();
-  console.log('teacherData', teacherData);
   
   if (!teacherData) {
     return false;
@@ -149,7 +146,6 @@ export const isAuthenticatedAdminAsync = async (): Promise<boolean> => {
 export const isAuthenticatedAdmin = (): boolean => {
   // Skip authentication check on localhost for development
   if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    console.log('Development mode - skipping authentication check');
     return true;
   }
   
@@ -168,7 +164,6 @@ export const isAuthenticatedAdmin = (): boolean => {
 export const authGuardAsync = async (): Promise<boolean> => {
   // Skip authentication check on localhost for development
   if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    console.log('Development mode - skipping authentication check');
     return true;
   }
   
@@ -177,18 +172,13 @@ export const authGuardAsync = async (): Promise<boolean> => {
   // Get current URL for redirect after login
   const currentUrl = encodeURIComponent(window.location.href);
   
-  // No cookies found - redirect to teacher login
   if (!teacherData) {
-    console.log('No teacher cookies found, redirecting to teacher login...');
-    console.log('Redirect URL:', `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`);
-    console.log('VITE_BASE_URL:', VITE_BASE_URL);
     window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
     return false;
   }
   
   // Not a teacher - redirect to teacher login
   if (!teacherData.isTeacher) {
-    console.log('User is not a teacher, redirecting to teacher login...');
     window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
     return false;
   }
@@ -198,13 +188,11 @@ export const authGuardAsync = async (): Promise<boolean> => {
     const isAdmin = await checkAdminStatusFromFirebase(teacherData.username);
     
     if (!isAdmin) {
-      console.log('Teacher does not have admin access in Firebase, showing error message...');
       showAdminAccessDeniedPage();
       return false;
     }
     
     // All checks passed - user is authenticated admin
-    console.log('Teacher authenticated with admin access from Firebase');
     return true;
   } catch (error) {
     console.error('Error checking admin status:', error);
@@ -221,7 +209,6 @@ export const authGuardAsync = async (): Promise<boolean> => {
 export const authGuard = (): boolean => {
   // Skip authentication check on localhost for development
   if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    console.log('Development mode - skipping authentication check');
     return true;
   }
   
@@ -230,28 +217,21 @@ export const authGuard = (): boolean => {
   const currentUrl = encodeURIComponent(window.location.href);
   
   if (!teacherData) {
-    console.log('No teacher cookies found, redirecting to teacher login...');
-    console.log('Redirect URL:', `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`);
-    console.log('VITE_BASE_URL:', VITE_BASE_URL);
     window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
     return false;
   }
   
   // Not a teacher - redirect to teacher login
   if (!teacherData.isTeacher) {
-    console.log('User is not a teacher, redirecting to teacher login...');
     window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
     return false;
   }
   
   if (!teacherData.admin) {
-    console.log('Teacher does not have admin access in cookie, showing error message...');
     showAdminAccessDeniedPage();
     return false;
   }
   
-  // All checks passed - user is authenticated admin
-  console.log('Teacher authenticated with admin access');
   return true;
 };
 
