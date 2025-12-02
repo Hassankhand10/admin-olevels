@@ -1,6 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { HomePage } from './components/HomePage';
 import { Dashboard } from './components/Dashboard';
+import { StudentPerformanceReport } from './components/StudentPerformanceReport';
 import { useAuthGuard } from './utils/authGuard';
 
 // Protected Route Component
@@ -49,6 +50,11 @@ function App() {
         <Route path="/dashboard/weekly-test" element={
           <ProtectedRoute>
             <Dashboard />
+          </ProtectedRoute>
+        } />
+        <Route path="/dashboard/student-performance-report" element={
+          <ProtectedRoute>
+            <StudentPerformanceReport />
           </ProtectedRoute>
         } />
         <Route path="/home" element={<Navigate to="/dashboard" replace />} />

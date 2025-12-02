@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FileText } from 'lucide-react';
+import { FileText, BarChart } from 'lucide-react';
 import OLevelsLogo from '../assets/OLevels-logo-color.png';
 
 interface CardData {
@@ -22,6 +22,14 @@ export const HomePage = () => {
       icon: FileText,
       description: 'Manage weekly tests and student submissions',
       onClick: () => navigate('/dashboard/weekly-test'),
+      isMain: true
+    },
+    {
+      id: 'student-performance-report',
+      title: 'STUDENT PERFORMANCE REPORT',
+      icon: BarChart,
+      description: 'View and analyze student performance reports',
+      onClick: () => navigate('/dashboard/student-performance-report'),
       isMain: true
     },
   ];
