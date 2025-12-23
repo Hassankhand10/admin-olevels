@@ -61,6 +61,8 @@ export const StudentPerformanceReport = () => {
   const [selectedTopic, setSelectedTopic] = useState<string>('all');
   const [studentCategory, setStudentCategory] = useState<string>('');
   const [loading, setLoading] = useState(false);
+  const [generatingReport, setGeneratingReport] = useState(false);
+  const [pdfLink, setPdfLink] = useState<string>('');
   
   // Date filter - default to last 1 week
   const [startDate, setStartDate] = useState<string>(() => {
@@ -887,6 +889,192 @@ export const StudentPerformanceReport = () => {
     }
   };
 
+  const generateReport = async () => {
+    if (!selectedStudent || loading) {
+      toast.error('Please wait for data to load');
+      return;
+    }
+
+    setGeneratingReport(true);
+    setPdfLink('');
+    
+    try {
+      // Prepare complete report data
+      const reportData = {
+        student: {
+          name: selectedStudent,
+          studentId: students.find(s => s.name === selectedStudent)?.studentId || selectedStudent,
+          topics: studentTopics.map(topicId => ({
+            id: topicId,
+            name: allTopics[topicId]?.name || topicId
+          }))
+        },
+        filters: {
+          selectedTopic: selectedTopic && studentTopics.includes(selectedTopic) 
+            ? { id: selectedTopic, name: allTopics[selectedTopic]?.name || selectedTopic }
+            : 'all',
+          startDate,
+          endDate
+        },
+        statistics: getStudentStats(),
+        previousClasses: classes.map(classItem => {
+          const studentInClass = Object.values(classItem.students || {}).flat().find((s: any) => 
+            s.name === selectedStudent
+          );
+          
+          // Calculate percentage
+          let percentage = studentInClass?.percentage;
+          if (studentInClass && (!percentage || percentage === '')) {
+            const studentAQ = studentInClass.aq || 0;
+            const studentCQ = studentInClass.cq || 0;
+            const studentTotalMarks = studentAQ + studentCQ;
+            const classAQCount = classItem.aqcount || 0;
+            const classCQCount = classItem.cqcount || 0;
+            const classTotalMarks = classAQCount + classCQCount;
+            percentage = classTotalMarks > 0 ? ((studentTotalMarks / classTotalMarks) * 100).toFixed(2) : '0.00';
+          }
+          
+          if (!studentInClass) return null;
+          
+          return {
+            date: classItem.creationDate,
+            topic: allTopics[classItem.topic]?.name || classItem.topic,
+            totalMarks: `${(classItem.aqcount || 0) + (classItem.cqcount || 0)} (AQ: ${classItem.aqcount || 0}, CQ: ${classItem.cqcount || 0})`,
+            studentPerformance: {
+              aqScore: `${studentInClass.aq || 0}/${classItem.aqcount || 0}`,
+              cqScore: `${studentInClass.cq || 0}/${classItem.cqcount || 0}`,
+              total: `${(studentInClass.aq || 0) + (studentInClass.cq || 0)}/${(classItem.aqcount || 0) + (classItem.cqcount || 0)}`,
+              percentage: percentage || '0.00'
+            }
+          };
+        }),
+        assignments: assignments.map(item => {
+          const studentData = item.studentData || {};
+          const assignmentData = item.assignment.data as any;
+          const assignmentType = assignmentData.type || 'ATTACHMENT';
+          const isInteractive = assignmentType === 'INTERACTIVE' || assignmentType === 'INTERACTIVE_NOTES' || assignmentType === 'QUIZ';
+          
+          let gained = 0;
+          let total = 0;
+          let attempted = 0;
+          let attemptedMarks = 0;
+          
+          if (isInteractive) {
+            if (studentData.performance) {
+              gained = studentData.performance.gained || 0;
+              attempted = studentData.performance.attempted || 0;
+              attemptedMarks = studentData.performance.attemptedMarks || 0;
+            } else if (studentData.result && Array.isArray(studentData.result)) {
+              studentData.result.forEach((lessonResult: any) => {
+                gained += parseFloat(lessonResult.gained || '0');
+                attempted += parseFloat(lessonResult.attempted || '0');
+                attemptedMarks += lessonResult.attemptedMarks || 0;
+              });
+            } else {
+              gained = studentData.totalGained || 0;
+              attempted = studentData.totalAttempted || 0;
+              attemptedMarks = studentData.totalAttempted || 0;
+            }
+            total = attemptedMarks > 0 ? attemptedMarks : parseFloat(assignmentData.totalMarks) || 0;
+          } else {
+            gained = studentData.totalGained || studentData.marks || 0;
+            total = parseFloat(assignmentData.totalMarks) || 0;
+          }
+          
+          const percentage = isInteractive 
+            ? (attemptedMarks > 0 ? (gained / attemptedMarks) * 100 : 0)
+            : (total > 0 ? (gained / total) * 100 : 0);
+          
+          // For INTERACTIVE/AI/LIVE: Title, Submission Status, Attempted, Attempted Marks, Gained, Total Question, Total Marks, Percentage, Category
+          // For ATTACHMENT: Title, Submission Status, Files, Submission Time, Marks, Total Marks, Feedback, Feedback Files, Category
+          
+          if (isInteractive || assignmentType === 'AI' || assignmentType === 'LIVE') {
+            return {
+              title: assignmentData.title,
+              type: assignmentType,
+              submissionStatus: studentData.graded || studentData.status === 'graded' ? 'Graded' : 
+                                studentData.submission || studentData.status === 'submitted' || studentData.status === 'completed' ? 'Submitted' : 'Pending',
+              attempted,
+              attemptedMarks,
+              gained,
+              totalQuestion: attempted,
+              totalMarks: total,
+              percentage: percentage.toFixed(2) + '%',
+              category: assignmentData.selectedAssignmentCategory || ''
+            };
+          } else {
+            // ATTACHMENT type
+            return {
+              title: assignmentData.title,
+              type: assignmentType,
+              submissionStatus: studentData.graded || studentData.status === 'graded' ? 'Graded' : 
+                                studentData.submission || studentData.status === 'submitted' || studentData.status === 'completed' ? 'Submitted' : 'Pending',
+              files: (studentData.attachments || []).map((file: any) => ({ name: file.name, url: file.url })),
+              submissionTime: studentData.submissionTime || studentData.submittedAt || '',
+              marks: gained,
+              totalMarks: total,
+              feedback: studentData.feedback || '',
+              feedbackFiles: (studentData.feedbackURLs || []).map((file: any) => ({ name: file.name, url: file.url })),
+              category: assignmentData.selectedAssignmentCategory || ''
+            };
+          }
+        }),
+        weeklyTests: weeklyTests.map(item => {
+          const studentData = item.studentData || {};
+          const assignmentData = item.assignment.data as any;
+          
+          const gained = studentData.totalGained || studentData.marks || 0;
+          const total = parseFloat(assignmentData.totalMarks) || 0;
+          
+          return {
+            title: assignmentData.title,
+            deadline: assignmentData.deadline || '',
+            submissionStatus: studentData.graded || studentData.status === 'graded' ? 'Graded' : 
+                              studentData.submission || studentData.status === 'submitted' || studentData.status === 'completed' ? 'Submitted' : 'Pending',
+            submissionTime: studentData.submissionTime || studentData.submittedAt || '',
+            marks: `${gained}/${total}`,
+            feedback: studentData.feedback || '',
+            files: (studentData.attachments || []).map((file: any) => ({ name: file.name, url: file.url })),
+            feedbackFiles: (studentData.feedbackURLs || []).map((file: any) => ({ name: file.name, url: file.url })),
+            message: studentData.message || '',
+            supervisionApproval: studentData.supervisionApproval || 'Not Set',
+            supervisionLink: studentData.supervisionVideoUrl || ''
+          };
+        })
+      };
+
+      // Send to API
+      const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
+      const apiUrl = `${apiBaseUrl}api/openai/generatePdfFromAssistant`;
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ data: reportData }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      
+      if (result.success && (result.pdfLink || result.fileUrl)) {
+        const pdfUrl = result.pdfLink || result.fileUrl;
+        setPdfLink(pdfUrl);
+        toast.success(result.message || 'Report generated successfully!');
+      } else {
+        throw new Error(result.message || 'No PDF link in response');
+      }
+    } catch (error) {
+      console.error('Error generating report:', error);
+      toast.error('Failed to generate report. Please try again.');
+    } finally {
+      setGeneratingReport(false);
+    }
+  };
+
   const stats = getStudentStats();
 
   return (
@@ -918,15 +1106,62 @@ export const StudentPerformanceReport = () => {
           <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100/50 p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-gray-800">Filters</h3>
-              <button
-                onClick={generatePDF}
-                disabled={loading || classes.length === 0 && assignments.length === 0 && weeklyTests.length === 0}
-                className="px-4 py-2 bg-[#b30104] text-white rounded-lg hover:bg-[#7a0103] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm font-medium"
-              >
-                <Download className="w-4 h-4" />
-                Generate PDF
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={generatePDF}
+                  disabled={loading || (classes.length === 0 && assignments.length === 0 && weeklyTests.length === 0)}
+                  className="px-4 py-2 bg-[#b30104] text-white rounded-lg hover:bg-[#7a0103] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm font-medium"
+                >
+                  <Download className="w-4 h-4" />
+                  Generate PDF
+                </button>
+                <button
+                  onClick={generateReport}
+                  disabled={loading || generatingReport || !selectedStudent || (classes.length === 0 && assignments.length === 0 && weeklyTests.length === 0)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm font-medium"
+                >
+                  {generatingReport ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      Generating...
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="w-4 h-4" />
+                      Generate Report
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
+            {pdfLink && (
+              <div className="mt-4 mb-8">
+                <div className="mb-3 p-3 bg-green-50 border border-green-200 rounded-lg">
+                  <p className="text-sm font-medium text-green-800">Report generated successfully!</p>
+                </div>
+                <div className="bg-white border border-gray-300 rounded-lg shadow-lg overflow-hidden">
+                  <div className="bg-gray-50 px-4 py-2 border-b border-gray-200 flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-700">PDF Report</span>
+                    <a
+                      href={pdfLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-600 hover:text-blue-800 text-sm font-medium underline"
+                    >
+                      Open in new tab
+                    </a>
+                  </div>
+                  <div className="w-full" style={{ height: 'calc(100vh - 400px)', minHeight: '600px' }}>
+                    <iframe
+                      src={`${pdfLink}#toolbar=1&navpanes=1&scrollbar=1`}
+                      className="w-full h-full"
+                      title="Generated PDF Report"
+                      style={{ border: 'none' }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               {/* Student Selector */}
               <div>
@@ -1420,188 +1655,471 @@ export const StudentPerformanceReport = () => {
                 )}
               </div>
 
-              {/* Assignments Section */}
-              <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100/50 p-8">
-                <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-3">
-                  <div className="bg-gradient-to-br from-[#b30104] to-[#7a0103] p-2 rounded-lg shadow-lg">
-                    <FileText className="w-6 h-6 text-white" />
-                  </div>
-                  Assignments ({assignments.length})
-                </h2>
+              {/* Assignments Section - Separated by Type */}
+              <div className="space-y-8">
+                {/* INTERACTIVE Assignments */}
+                {(() => {
+                  const interactiveAssignments = assignments.filter(item => {
+                    const assignmentType = (item.assignment.data as any).type || 'ATTACHMENT';
+                    return assignmentType === 'INTERACTIVE' || assignmentType === 'INTERACTIVE_NOTES' || assignmentType === 'QUIZ';
+                  });
 
-                {assignments.length === 0 ? (
-                  <div className="text-center py-8 text-gray-500">No assignments found for selected period</div>
-                ) : (
-                  <div className="overflow-x-auto max-h-[1000px] overflow-y-auto">
-                    <table className="w-full">
-                      <thead>
-                        <tr className="border-b-2 border-gray-200 bg-gray-50">
-                          <th className="text-left py-3 px-4 font-semibold text-gray-700">Title</th>
-                          <th className="text-left py-3 px-4 font-semibold text-gray-700">Submission Status</th>
-                          <th className="text-center py-3 px-4 font-semibold text-gray-700">Marks</th>
-                          <th className="text-center py-3 px-4 font-semibold text-gray-700">Gained</th>
-                          <th className="text-center py-3 px-4 font-semibold text-gray-700">Percentage</th>
-                          <th className="text-left py-3 px-4 font-semibold text-gray-700">Type</th>
-                          <th className="text-left py-3 px-4 font-semibold text-gray-700">Feedback</th>
-                          <th className="text-left py-3 px-4 font-semibold text-gray-700">Files</th>
-                          <th className="text-left py-3 px-4 font-semibold text-gray-700">Feedback Files</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {assignments.map((item) => {
-                          const studentData = item.studentData || {};
-                          const assignmentData = item.assignment.data as any;
-                          const assignmentType = assignmentData.type || 'ATTACHMENT';
-                          const isInteractive = assignmentType === 'INTERACTIVE' || assignmentType === 'INTERACTIVE_NOTES' || assignmentType === 'QUIZ';
-                          
-                          // For interactive assignments - calculate from result array
-                          let gained = 0;
-                          let total = 0;
-                          let attempted = 0;
-                          let attemptedMarks = 0;
-                          
-                          if (isInteractive) {
-                            // Check if performance object exists (calculated summary)
-                            if (studentData.performance) {
-                              gained = studentData.performance.gained || 0;
-                              attempted = studentData.performance.attempted || 0;
-                              attemptedMarks = studentData.performance.attempted || 0;
-                            } 
-                            // Otherwise calculate from result array
-                            else if (studentData.result && Array.isArray(studentData.result)) {
-                              studentData.result.forEach((lessonResult: any) => {
-                                const lessonGained = parseFloat(lessonResult.gained || '0');
-                                const lessonAttempted = parseFloat(lessonResult.attempted || '0');
-                                const lessonAttemptedMarks = lessonResult.attemptedMarks || 0;
-                                
-                                gained += lessonGained;
-                                attempted += lessonAttempted;
-                                attemptedMarks += lessonAttemptedMarks;
-                              });
-                            }
-                            // Fallback to totalGained if available
-                            else {
-                              gained = studentData.totalGained || 0;
-                              attempted = studentData.totalAttempted || 0;
-                              attemptedMarks = studentData.totalAttempted || 0;
-                            }
-                            
-                            // For interactive, use attemptedMarks as total (not assignment totalMarks)
-                            total = attemptedMarks > 0 ? attemptedMarks : parseFloat(assignmentData.totalMarks) || 0;
-                          } else {
-                            // For attachment assignments
-                            gained = studentData.totalGained || studentData.marks || 0;
-                            total = parseFloat(assignmentData.totalMarks) || 0;
-                          }
-                          
-                          // Calculate percentage - for interactive use attemptedMarks, for attachment use total
-                          const percentage = isInteractive 
-                            ? (attemptedMarks > 0 ? (gained / attemptedMarks) * 100 : 0)
-                            : (total > 0 ? (gained / total) * 100 : 0);
-                          const isGraded = studentData.graded || studentData.status === 'graded';
-                          const isSubmitted = studentData.submission || studentData.status === 'submitted' || studentData.status === 'completed';
-                          
-                          // Get attachments and feedback files
-                          const attachments = studentData.attachments || [];
-                          const feedbackURLs = studentData.feedbackURLs || [];
+                  if (interactiveAssignments.length === 0) return null;
 
-                          return (
-                            <tr key={`${item.topicId}-${item.assignment.id}`} className="border-b border-gray-100 hover:bg-gray-50">
-                              <td className="py-3 px-4 text-gray-800 font-medium">{item.assignment.data.title}</td>
-                              <td className="py-3 px-4">
-                                <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                  isGraded ? 'bg-green-100 text-green-800' :
-                                  isSubmitted ? 'bg-yellow-100 text-yellow-800' :
-                                  'bg-gray-100 text-gray-800'
-                                }`}>
-                                  {isGraded ? 'Graded' : isSubmitted ? 'Submitted' : 'Pending'}
-                                </span>
-                              </td>
-                              <td className="py-3 px-4 text-center">
-                                {isInteractive ? (
-                                  <div className="text-sm">
-                                    <div className="font-semibold text-gray-800">{attemptedMarks > 0 ? attemptedMarks : total}</div>
-                                    <div className="text-xs text-gray-500">Total Marks</div>
-                                  </div>
-                                ) : (
-                                  <span className="text-gray-600">{total}</span>
-                                )}
-                              </td>
-                              <td className="py-3 px-4 text-center">
-                                {isInteractive ? (
-                                  <div className="text-sm">
-                                    <div className="font-semibold text-gray-800">{gained}</div>
-                                    {attempted > 0 && (
-                                      <div className="text-xs text-gray-500">
-                                        Attempted: {attempted}
-                                        {attemptedMarks > 0 && ` (${attemptedMarks} marks)`}
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <span className="font-semibold text-gray-800">{gained}</span>
-                                )}
-                              </td>
-                              <td className="py-3 px-4 text-center">
-                                <span className={`font-bold ${
-                                  percentage >= 80 ? 'text-green-600' :
-                                  percentage >= 60 ? 'text-yellow-600' :
-                                  'text-red-600'
-                                }`}>
-                                  {percentage.toFixed(1)}%
-                                </span>
-                              </td>
-                              <td className="py-3 px-4">
-                                <span className="px-2 py-1 rounded text-xs font-medium bg-blue-100 text-blue-800">
-                                  {assignmentType}
-                                </span>
-                              </td>
-                              <td className="py-3 px-4 text-gray-700 text-sm max-w-xs">
-                                {studentData.feedback || '-'}
-                              </td>
-                              <td className="py-3 px-4">
-                                <div className="flex flex-col gap-1">
-                                  {attachments.length > 0 ? (
-                                    attachments.map((file: any, idx: number) => (
-                                      <a
-                                        key={idx}
-                                        href={file.url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-blue-600 hover:text-blue-800 text-xs underline truncate max-w-xs"
-                                      >
-                                        {file.name || 'File'}
-                                      </a>
-                                    ))
-                                  ) : (
-                                    <span className="text-gray-400 text-xs">No files</span>
-                                  )}
-                                </div>
-                              </td>
-                              <td className="py-3 px-4">
-                                <div className="flex flex-col gap-1">
-                                  {feedbackURLs.length > 0 ? (
-                                    feedbackURLs.map((file: any, idx: number) => (
-                                      <a
-                                        key={idx}
-                                        href={file.url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-green-600 hover:text-green-800 text-xs underline truncate max-w-xs"
-                                      >
-                                        {file.name || 'Feedback File'}
-                                      </a>
-                                    ))
-                                  ) : (
-                                    <span className="text-gray-400 text-xs">No feedback files</span>
-                                  )}
-                                </div>
-                              </td>
+                  return (
+                    <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100/50 p-8">
+                      <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-3">
+                        <div className="bg-gradient-to-br from-[#b30104] to-[#7a0103] p-2 rounded-lg shadow-lg">
+                          <FileText className="w-6 h-6 text-white" />
+                        </div>
+                        INTERACTIVE Assignments ({interactiveAssignments.length})
+                      </h2>
+                      <div className="overflow-x-auto max-h-[1000px] overflow-y-auto">
+                        <table className="w-full">
+                          <thead>
+                            <tr className="border-b-2 border-gray-200 bg-gray-50">
+                              <th className="text-left py-3 px-4 font-semibold text-gray-700">Title</th>
+                              <th className="text-left py-3 px-4 font-semibold text-gray-700">Submission Status</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Attempted</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Attempted Marks</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Gained</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Total Question</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Total Marks</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Percentage</th>
+                              <th className="text-left py-3 px-4 font-semibold text-gray-700">Category</th>
                             </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                          </thead>
+                          <tbody>
+                            {interactiveAssignments.map((item) => {
+                              const studentData = item.studentData || {};
+                              const assignmentData = item.assignment.data as any;
+                              
+                              let gained = 0;
+                              let total = 0;
+                              let attempted = 0;
+                              let attemptedMarks = 0;
+                              
+                              if (studentData.performance) {
+                                gained = studentData.performance.gained || 0;
+                                attempted = studentData.performance.attempted || 0;
+                                attemptedMarks = studentData.performance.attemptedMarks || 0;
+                              } else if (studentData.result && Array.isArray(studentData.result)) {
+                                studentData.result.forEach((lessonResult: any) => {
+                                  gained += parseFloat(lessonResult.gained || '0');
+                                  attempted += parseFloat(lessonResult.attempted || '0');
+                                  attemptedMarks += lessonResult.attemptedMarks || 0;
+                                });
+                              } else {
+                                gained = studentData.totalGained || 0;
+                                attempted = studentData.totalAttempted || 0;
+                                attemptedMarks = studentData.totalAttempted || 0;
+                              }
+                              
+                              total = attemptedMarks > 0 ? attemptedMarks : parseFloat(assignmentData.totalMarks) || 0;
+                              const percentage = attemptedMarks > 0 ? (gained / attemptedMarks) * 100 : 0;
+                              const isGraded = studentData.graded || studentData.status === 'graded';
+                              const isSubmitted = studentData.submission || studentData.status === 'submitted' || studentData.status === 'completed';
+                              const category = assignmentData.selectedAssignmentCategory || '-';
+
+                              return (
+                                <tr key={`${item.topicId}-${item.assignment.id}`} className="border-b border-gray-100 hover:bg-gray-50">
+                                  <td className="py-3 px-4 text-gray-800 font-medium">{item.assignment.data.title}</td>
+                                  <td className="py-3 px-4">
+                                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                      isGraded ? 'bg-green-100 text-green-800' :
+                                      isSubmitted ? 'bg-yellow-100 text-yellow-800' :
+                                      'bg-gray-100 text-gray-800'
+                                    }`}>
+                                      {isGraded ? 'Graded' : isSubmitted ? 'Submitted' : 'Pending'}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4 text-center text-gray-800">{attempted}</td>
+                                  <td className="py-3 px-4 text-center text-gray-800">{attemptedMarks}</td>
+                                  <td className="py-3 px-4 text-center font-semibold text-gray-800">{gained}</td>
+                                  <td className="py-3 px-4 text-center text-gray-800">{attempted}</td>
+                                  <td className="py-3 px-4 text-center text-gray-800">{total}</td>
+                                  <td className="py-3 px-4 text-center">
+                                    <span className={`font-bold ${
+                                      percentage >= 80 ? 'text-green-600' :
+                                      percentage >= 60 ? 'text-yellow-600' :
+                                      'text-red-600'
+                                    }`}>
+                                      {percentage.toFixed(1)}%
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4 text-gray-700 text-sm">{category}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* AI Assignments */}
+                {(() => {
+                  const aiAssignments = assignments.filter(item => {
+                    const assignmentType = (item.assignment.data as any).type || 'ATTACHMENT';
+                    return assignmentType === 'AI';
+                  });
+
+                  if (aiAssignments.length === 0) return null;
+
+                  return (
+                    <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100/50 p-8">
+                      <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-3">
+                        <div className="bg-gradient-to-br from-[#b30104] to-[#7a0103] p-2 rounded-lg shadow-lg">
+                          <FileText className="w-6 h-6 text-white" />
+                        </div>
+                        AI Assignments ({aiAssignments.length})
+                      </h2>
+                      <div className="overflow-x-auto max-h-[1000px] overflow-y-auto">
+                        <table className="w-full">
+                          <thead>
+                            <tr className="border-b-2 border-gray-200 bg-gray-50">
+                              <th className="text-left py-3 px-4 font-semibold text-gray-700">Title</th>
+                              <th className="text-left py-3 px-4 font-semibold text-gray-700">Submission Status</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Attempted</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Attempted Marks</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Gained</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Total Question</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Total Marks</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Percentage</th>
+                              <th className="text-left py-3 px-4 font-semibold text-gray-700">Category</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {aiAssignments.map((item) => {
+                              const studentData = item.studentData || {};
+                              const assignmentData = item.assignment.data as any;
+                              
+                              let gained = 0;
+                              let total = 0;
+                              let attempted = 0;
+                              let attemptedMarks = 0;
+                              
+                              if (studentData.performance) {
+                                gained = studentData.performance.gained || 0;
+                                attempted = studentData.performance.attempted || 0;
+                                attemptedMarks = studentData.performance.attemptedMarks || 0;
+                              } else if (studentData.result && Array.isArray(studentData.result)) {
+                                studentData.result.forEach((lessonResult: any) => {
+                                  gained += parseFloat(lessonResult.gained || '0');
+                                  attempted += parseFloat(lessonResult.attempted || '0');
+                                  attemptedMarks += lessonResult.attemptedMarks || 0;
+                                });
+                              } else {
+                                gained = studentData.totalGained || 0;
+                                attempted = studentData.totalAttempted || 0;
+                                attemptedMarks = studentData.totalAttempted || 0;
+                              }
+                              
+                              total = attemptedMarks > 0 ? attemptedMarks : parseFloat(assignmentData.totalMarks) || 0;
+                              const percentage = attemptedMarks > 0 ? (gained / attemptedMarks) * 100 : 0;
+                              const isGraded = studentData.graded || studentData.status === 'graded';
+                              const isSubmitted = studentData.submission || studentData.status === 'submitted' || studentData.status === 'completed';
+                              const category = assignmentData.selectedAssignmentCategory || '-';
+
+                              return (
+                                <tr key={`${item.topicId}-${item.assignment.id}`} className="border-b border-gray-100 hover:bg-gray-50">
+                                  <td className="py-3 px-4 text-gray-800 font-medium">{item.assignment.data.title}</td>
+                                  <td className="py-3 px-4">
+                                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                      isGraded ? 'bg-green-100 text-green-800' :
+                                      isSubmitted ? 'bg-yellow-100 text-yellow-800' :
+                                      'bg-gray-100 text-gray-800'
+                                    }`}>
+                                      {isGraded ? 'Graded' : isSubmitted ? 'Submitted' : 'Pending'}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4 text-center text-gray-800">{attempted}</td>
+                                  <td className="py-3 px-4 text-center text-gray-800">{attemptedMarks}</td>
+                                  <td className="py-3 px-4 text-center font-semibold text-gray-800">{gained}</td>
+                                  <td className="py-3 px-4 text-center text-gray-800">{attempted}</td>
+                                  <td className="py-3 px-4 text-center text-gray-800">{total}</td>
+                                  <td className="py-3 px-4 text-center">
+                                    <span className={`font-bold ${
+                                      percentage >= 80 ? 'text-green-600' :
+                                      percentage >= 60 ? 'text-yellow-600' :
+                                      'text-red-600'
+                                    }`}>
+                                      {percentage.toFixed(1)}%
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4 text-gray-700 text-sm">{category}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* LIVE Assignments */}
+                {(() => {
+                  const liveAssignments = assignments.filter(item => {
+                    const assignmentType = (item.assignment.data as any).type || 'ATTACHMENT';
+                    return assignmentType === 'LIVE';
+                  });
+
+                  if (liveAssignments.length === 0) return null;
+
+                  return (
+                    <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100/50 p-8">
+                      <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-3">
+                        <div className="bg-gradient-to-br from-[#b30104] to-[#7a0103] p-2 rounded-lg shadow-lg">
+                          <FileText className="w-6 h-6 text-white" />
+                        </div>
+                        LIVE Assignments ({liveAssignments.length})
+                      </h2>
+                      <div className="overflow-x-auto max-h-[1000px] overflow-y-auto">
+                        <table className="w-full">
+                          <thead>
+                            <tr className="border-b-2 border-gray-200 bg-gray-50">
+                              <th className="text-left py-3 px-4 font-semibold text-gray-700">Title</th>
+                              <th className="text-left py-3 px-4 font-semibold text-gray-700">Submission Status</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Attempted</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Attempted Marks</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Gained</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Total Questions</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Total Marks</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Percentage</th>
+                              <th className="text-left py-3 px-4 font-semibold text-gray-700">Category</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {liveAssignments.map((item) => {
+                              const studentData = item.studentData || {};
+                              const assignmentData = item.assignment.data as any;
+                              
+                              let gained = 0;
+                              let total = 0;
+                              let attempted = 0;
+                              let attemptedMarks = 0;
+                              
+                              if (studentData.performance) {
+                                gained = studentData.performance.gained || 0;
+                                attempted = studentData.performance.attempted || 0;
+                                attemptedMarks = studentData.performance.attemptedMarks || 0;
+                              } else if (studentData.result && Array.isArray(studentData.result)) {
+                                studentData.result.forEach((lessonResult: any) => {
+                                  gained += parseFloat(lessonResult.gained || '0');
+                                  attempted += parseFloat(lessonResult.attempted || '0');
+                                  attemptedMarks += lessonResult.attemptedMarks || 0;
+                                });
+                              } else {
+                                gained = studentData.totalGained || 0;
+                                attempted = studentData.totalAttempted || 0;
+                                attemptedMarks = studentData.totalAttempted || 0;
+                              }
+                              
+                              total = attemptedMarks > 0 ? attemptedMarks : parseFloat(assignmentData.totalMarks) || 0;
+                              const percentage = attemptedMarks > 0 ? (gained / attemptedMarks) * 100 : 0;
+                              const isGraded = studentData.graded || studentData.status === 'graded';
+                              const isSubmitted = studentData.submission || studentData.status === 'submitted' || studentData.status === 'completed';
+                              const category = assignmentData.selectedAssignmentCategory || '-';
+
+                              return (
+                                <tr key={`${item.topicId}-${item.assignment.id}`} className="border-b border-gray-100 hover:bg-gray-50">
+                                  <td className="py-3 px-4 text-gray-800 font-medium">{item.assignment.data.title}</td>
+                                  <td className="py-3 px-4">
+                                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                      isGraded ? 'bg-green-100 text-green-800' :
+                                      isSubmitted ? 'bg-yellow-100 text-yellow-800' :
+                                      'bg-gray-100 text-gray-800'
+                                    }`}>
+                                      {isGraded ? 'Graded' : isSubmitted ? 'Submitted' : 'Pending'}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4 text-center text-gray-800">{attempted}</td>
+                                  <td className="py-3 px-4 text-center text-gray-800">{attemptedMarks}</td>
+                                  <td className="py-3 px-4 text-center font-semibold text-gray-800">{gained}</td>
+                                  <td className="py-3 px-4 text-center text-gray-800">{attempted}</td>
+                                  <td className="py-3 px-4 text-center text-gray-800">{total}</td>
+                                  <td className="py-3 px-4 text-center">
+                                    <span className={`font-bold ${
+                                      percentage >= 80 ? 'text-green-600' :
+                                      percentage >= 60 ? 'text-yellow-600' :
+                                      'text-red-600'
+                                    }`}>
+                                      {percentage.toFixed(1)}%
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4 text-gray-700 text-sm">{category}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* ATTACHMENT Assignments */}
+                {(() => {
+                  const attachmentAssignments = assignments.filter(item => {
+                    const assignmentType = (item.assignment.data as any).type || 'ATTACHMENT';
+                    return assignmentType === 'ATTACHMENT';
+                  });
+
+                  if (attachmentAssignments.length === 0) return null;
+
+                  return (
+                    <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100/50 p-8">
+                      <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-3">
+                        <div className="bg-gradient-to-br from-[#b30104] to-[#7a0103] p-2 rounded-lg shadow-lg">
+                          <FileText className="w-6 h-6 text-white" />
+                        </div>
+                        ATTACHMENT Assignments ({attachmentAssignments.length})
+                      </h2>
+                      <div className="overflow-x-auto max-h-[1000px] overflow-y-auto">
+                        <table className="w-full">
+                          <thead>
+                            <tr className="border-b-2 border-gray-200 bg-gray-50">
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Title</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Submission Status</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Files</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Submission Time</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Marks</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Total Marks</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Feedback</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Feedback Files</th>
+                              <th className="text-center py-3 px-4 font-semibold text-gray-700">Category</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {attachmentAssignments.map((item) => {
+                              const studentData = item.studentData || {};
+                              const assignmentData = item.assignment.data as any;
+                              
+                              const gained = studentData.totalGained || studentData.marks || 0;
+                              const totalMarks = parseFloat(assignmentData.totalMarks) || 0;
+                              const isGraded = studentData.graded || studentData.status === 'graded';
+                              const isSubmitted = studentData.submission || studentData.status === 'submitted' || studentData.status === 'completed';
+                              const attachments = studentData.attachments || [];
+                              
+                              // Handle submissionTime - can be already formatted string or timestamp
+                              const submissionTime = studentData.submissionTime || studentData.submittedAt || '';
+                              let formattedTime = 'N/A';
+                              
+                              if (submissionTime) {
+                                // Check if it's already a formatted string (contains "th", "st", "nd", "rd" or month names)
+                                if (typeof submissionTime === 'string' && 
+                                    (submissionTime.includes('th') || submissionTime.includes('st') || 
+                                     submissionTime.includes('nd') || submissionTime.includes('rd') ||
+                                     submissionTime.includes('November') || submissionTime.includes('December') ||
+                                     submissionTime.includes('January') || submissionTime.includes('February') ||
+                                     submissionTime.includes('March') || submissionTime.includes('April') ||
+                                     submissionTime.includes('May') || submissionTime.includes('June') ||
+                                     submissionTime.includes('July') || submissionTime.includes('August') ||
+                                     submissionTime.includes('September') || submissionTime.includes('October'))) {
+                                  formattedTime = submissionTime;
+                                } else {
+                                  // Try to parse as date
+                                  try {
+                                    const timeDate = typeof submissionTime === 'string' 
+                                      ? new Date(submissionTime) 
+                                      : new Date(submissionTime);
+                                    
+                                    if (!isNaN(timeDate.getTime())) {
+                                      formattedTime = timeDate.toLocaleString('en-US', { 
+                                        year: 'numeric', 
+                                        month: 'long', 
+                                        day: 'numeric', 
+                                        hour: '2-digit', 
+                                        minute: '2-digit', 
+                                        second: '2-digit', 
+                                        hour12: true 
+                                      });
+                                    } else {
+                                      // If date parsing fails, try to use as string
+                                      formattedTime = String(submissionTime);
+                                    }
+                                  } catch (error) {
+                                    // If any error occurs, use the string value
+                                    formattedTime = String(submissionTime);
+                                  }
+                                }
+                              }
+                              
+                              const category = assignmentData.selectedAssignmentCategory || '-';
+                              const feedbackURLs = studentData.feedbackURLs || [];
+                              const feedback = studentData.feedback || '-';
+
+                              return (
+                                <tr key={`${item.topicId}-${item.assignment.id}`} className="border-b border-gray-100 hover:bg-gray-50">
+                                  <td className="py-3 px-4 text-center text-gray-800 font-medium">{item.assignment.data.title}</td>
+                                  <td className="py-3 px-4 text-center">
+                                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                      isGraded ? 'bg-green-100 text-green-800' :
+                                      isSubmitted ? 'bg-yellow-100 text-yellow-800' :
+                                      'bg-gray-100 text-gray-800'
+                                    }`}>
+                                      {isGraded ? 'Graded' : isSubmitted ? 'Submitted' : 'Pending'}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4 text-center">
+                                    <div className="flex flex-col gap-1 items-center">
+                                      {attachments.length > 0 ? (
+                                        attachments.map((file: any, idx: number) => (
+                                          <a
+                                            key={idx}
+                                            href={file.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-blue-600 hover:text-blue-800 text-xs underline truncate max-w-xs"
+                                          >
+                                            {file.name || 'File'}
+                                          </a>
+                                        ))
+                                      ) : (
+                                        <span className="text-gray-400 text-xs">No files</span>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="py-3 px-4 text-center text-gray-700 text-sm">{formattedTime}</td>
+                                  <td className="py-3 px-4 text-center font-semibold text-gray-800">{gained}</td>
+                                  <td className="py-3 px-4 text-center text-gray-800">{totalMarks}</td>
+                                  <td className="py-3 px-4 text-center text-gray-700 text-sm max-w-xs">{feedback}</td>
+                                  <td className="py-3 px-4 text-center">
+                                    <div className="flex flex-col gap-1 items-center">
+                                      {feedbackURLs.length > 0 ? (
+                                        feedbackURLs.map((file: any, idx: number) => (
+                                          <a
+                                            key={idx}
+                                            href={file.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-green-600 hover:text-green-800 text-xs underline truncate max-w-xs"
+                                          >
+                                            {file.name || 'Feedback File'}
+                                          </a>
+                                        ))
+                                      ) : (
+                                        <span className="text-gray-400 text-xs">No feedback files</span>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="py-3 px-4 text-center text-gray-700 text-sm">{category}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Show message if no assignments */}
+                {assignments.length === 0 && (
+                  <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100/50 p-8">
+                    <div className="text-center py-8 text-gray-500">No assignments found for selected period</div>
                   </div>
                 )}
               </div>
