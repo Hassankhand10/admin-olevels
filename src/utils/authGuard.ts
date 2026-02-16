@@ -101,17 +101,22 @@ export const checkTeacherCookies = (): TeacherAuth | null => {
   }
 };
 
-// Check admin status from Firebase Realtime Database
 export const checkAdminStatusFromFirebase = async (username: string): Promise<boolean> => {
   try {
     const teacherRef = ref(database, `teachers/${username}`);
-    const snapshot = await get(teacherRef);
-    
-    if (snapshot.exists()) {
-      const teacherData = snapshot.val();
-      return teacherData.admin === true;
+    const teacherSnapshot = await get(teacherRef);
+    if (teacherSnapshot.exists()) {
+      const teacherData = teacherSnapshot.val();
+      if (teacherData.admin === true) return true;
     }
-    
+
+    const moduleAccessRef = ref(database, `teachers/${username}/moduleAccess`);
+    const moduleSnapshot = await get(moduleAccessRef);
+    if (moduleSnapshot.exists()) {
+      const moduleAccess = moduleSnapshot.val();
+      if (moduleAccess.admin === true) return true;
+    }
+
     return false;
   } catch (error) {
     console.error('Error checking admin status from Firebase:', error);
