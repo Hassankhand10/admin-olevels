@@ -210,9 +210,7 @@ export const authGuardAsync = async (): Promise<boolean> => {
   }
 };
 
-// Authentication guard function (sync version for immediate redirect)
 export const authGuard = (): boolean => {
-  // Skip authentication check on localhost for development
   if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
     return true;
   }
@@ -226,7 +224,7 @@ export const authGuard = (): boolean => {
     return false;
   }
   
-  // Not a teacher - redirect to teacher login
+
   if (!teacherData.isTeacher) {
     window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
     return false;
@@ -240,7 +238,6 @@ export const authGuard = (): boolean => {
   return true;
 };
 
-// Hook for React components to use authentication
 export const useAuthGuard = () => {
   const [isAuthenticated, setIsAuthenticated] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(true);
