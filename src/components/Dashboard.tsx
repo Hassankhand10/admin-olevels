@@ -1,8 +1,19 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { BookOpen, FileText, Users, CheckCircle } from 'lucide-react';
 import OLevelsLogo from '../assets/OLevels-logo-color.png';
-import { fetchAssignments, fetchStudentSubmissions, fetchTopics, updateSupervisionApproval, fetchStudentCategories } from '../services/firebaseService';
-import { Assignment, StudentData } from '../types';
+import {
+  fetchAssignments,
+  fetchWeeklyTestsFromRealtimeOnly,
+  fetchWeeklyTestStudentSubmissions,
+  fetchStudentSubmissions,
+  fetchTopics,
+  getTeacherReportDefaultDateRange,
+  parseDashboardDateFilterToWindow,
+  WEEKLY_TEST_LOOKBACK_DAYS,
+  updateSupervisionApproval,
+  fetchStudentCategories,
+} from '../services/firebaseService';
+import { Assignment, StudentData, StudentSubmission, WeeklyTestListItem } from '../types';
 import toast, { Toaster } from 'react-hot-toast';
 import { GRADING_BASE_URL , API_BASE_URL} from '../config/constants';
 
@@ -13,8 +24,8 @@ export const Dashboard = () => {
   const [allTopics, setAllTopics] = useState<{[key: string]: {course: any, name?: string}}>({});
   const [filteredTopics, setFilteredTopics] = useState<{id: string, title: string}[]>([]);
   const [selectedTopic, setSelectedTopic] = useState<string>('');
-  const [assignments, setAssignments] = useState<{ id: string; data: Assignment }[]>([]);
-  const [, setAllAssignments] = useState<{[topicId: string]: { id: string; data: Assignment }[]}>({});
+  const [assignments, setAssignments] = useState<WeeklyTestListItem[]>([]);
+  const [, setAllAssignments] = useState<{[topicId: string]: WeeklyTestListItem[]}>({});
   const [assignmentsByCourse, setAssignmentsByCourse] = useState<{[courseId: string]: Array<{
     topicId: string;
     topicName: string;
@@ -54,7 +65,11 @@ export const Dashboard = () => {
     deadlineNotPassed: 0,
     papers: []
   });
-  const [selectedAssignment, setSelectedAssignment] = useState<{ id: string; title: string } | null>(null);
+  const [selectedAssignment, setSelectedAssignment] = useState<{
+    id: string;
+    title: string;
+    archivedFirestoreDocId?: string;
+  } | null>(null);
   const [students, setStudents] = useState<StudentData>({});
   const [studentCategories, setStudentCategories] = useState<{[studentName: string]: {category: string}}>({});
   const [loadingCourses, setLoadingCourses] = useState(false);
@@ -110,14 +125,11 @@ export const Dashboard = () => {
   // Teacher search state
   const [teacherSearchTerm, setTeacherSearchTerm] = useState('');
   
-  // Date filter state for teacher grading report
+  // Date filter — defaults match weekly-test lookback (same window as RTDB + Firestore)
   const [teacherReportDateFilter, setTeacherReportDateFilter] = useState<{
     startDate: string;
     endDate: string;
-  }>({
-    startDate: '',
-    endDate: ''
-  });
+  }>(() => getTeacherReportDefaultDateRange());
   
   
   
@@ -125,23 +137,15 @@ export const Dashboard = () => {
   useEffect(() => {
     loadCourses();
     loadAllTopics();
+  }, []);
+
+  /** Same Start/End dates drive: pending lists, topic assignment list, Firestore archive, teacher report. */
+  useEffect(() => {
     loadAllAssignmentsFromAllTopics();
-  }, []);
+  }, [teacherReportDateFilter]);
 
   useEffect(() => {
-    // Load teacher grading report when component mounts
     loadTeacherGradingReport();
-  }, []);
-
-  // Auto-refresh teacher grading report when date filters change
-  useEffect(() => {
-    if (teacherReportDateFilter.startDate || teacherReportDateFilter.endDate) {
-      // Only refresh if we have data already loaded
-      if (Object.keys(teacherGradingReport).length > 0) {
-        // The filtering is handled by getFilteredTeachers(), no need to reload data
-        // This effect just ensures the UI updates when date filters change
-      }
-    }
   }, [teacherReportDateFilter]);
 
   useEffect(() => {
@@ -154,11 +158,15 @@ export const Dashboard = () => {
     if (selectedTopic) {
       loadAssignments(selectedTopic);
     }
-  }, [selectedTopic]);
+  }, [selectedTopic, teacherReportDateFilter]);
 
   useEffect(() => {
     if (selectedAssignment && selectedTopic) {
-      loadStudents(selectedTopic, selectedAssignment.title);
+      loadStudents(
+        selectedTopic,
+        selectedAssignment.title,
+        selectedAssignment.archivedFirestoreDocId
+      );
     }
   }, [selectedAssignment, selectedTopic]);
 
@@ -200,7 +208,7 @@ export const Dashboard = () => {
     }
   };
 
-  const loadUngradedAssignments = async (assignmentsData: {[topicId: string]: { id: string; data: Assignment }[]}, topicsData: {[key: string]: {course: any}}) => {
+  const loadUngradedAssignments = async (assignmentsData: {[topicId: string]: WeeklyTestListItem[]}, topicsData: {[key: string]: {course: any}}) => {
     setLoadingUngradedAssignments(true);
     try {
       const ungradedList: Array<{
@@ -220,8 +228,7 @@ export const Dashboard = () => {
           .map(assignment => ({ topicId, assignment }))
       );
 
-      // Process in batches of 5 to avoid overwhelming the API
-      const batchSize = 5;
+      const batchSize = 10;
       for (let i = 0; i < allAssignments.length; i += batchSize) {
         const batch = allAssignments.slice(i, i + batchSize);
         
@@ -286,7 +293,7 @@ export const Dashboard = () => {
     }
   };
 
-  const loadUnmarkedPapers = async (assignmentsData: {[topicId: string]: { id: string; data: Assignment }[]}, topicsData: {[key: string]: {course: any}}) => {
+  const loadUnmarkedPapers = async (assignmentsData: {[topicId: string]: WeeklyTestListItem[]}, topicsData: {[key: string]: {course: any}}) => {
     try {
       const unmarkedPapersList: Array<{
         topicId: string;
@@ -305,8 +312,7 @@ export const Dashboard = () => {
           .map(assignment => ({ topicId, assignment }))
       );
 
-      // Process in batches of 5 to avoid overwhelming the API
-      const batchSize = 5;
+      const batchSize = 10;
       for (let i = 0; i < allAssignments.length; i += batchSize) {
         const batch = allAssignments.slice(i, i + batchSize);
         
@@ -323,14 +329,15 @@ export const Dashboard = () => {
             
 
             Object.entries(studentData).forEach(([studentName, student]) => {
+              const s = student as StudentSubmission;
               // Only include students who have submitted but not been graded
-              if (student.submission && !student.graded) {
+              if (s.submission && !s.graded) {
                 unmarkedPapersList.push({
                   topicId,
                   topicName,
                   assignmentTitle: assignment.data.title,
                   studentName,
-                  submissionTime: student.submissionTime || '',
+                  submissionTime: s.submissionTime || '',
                   deadlinePassed: isGradingDeadlinePassed,
                   gradingDeadline: gradingDeadline.toISOString().split('T')[0]
                 });
@@ -368,12 +375,17 @@ export const Dashboard = () => {
   const loadAllAssignmentsFromAllTopics = async () => {
     try {
       const topicsData = await fetchTopics();
-      const allAssignmentsData: {[topicId: string]: { id: string; data: Assignment }[]} = {};
+      const allAssignmentsData: {[topicId: string]: WeeklyTestListItem[]} = {};
       
-      // Load assignments from all topics
+      const dateWindow = parseDashboardDateFilterToWindow(
+        teacherReportDateFilter.startDate,
+        teacherReportDateFilter.endDate
+      );
+
+      // Pending / unmarked: Realtime weekly tests only (same date window as main list)
       const assignmentPromises = Object.keys(topicsData).map(async (topicId) => {
         try {
-          const assignments = await fetchAssignments(topicId);
+          const assignments = await fetchWeeklyTestsFromRealtimeOnly(topicId, dateWindow);
           allAssignmentsData[topicId] = assignments;
         } catch (error) {
           console.error(`Error loading assignments for topic ${topicId}:`, error);
@@ -421,7 +433,11 @@ export const Dashboard = () => {
   const loadAssignments = async (topic: string) => {
     setLoadingAssignments(true);
     try {
-      const assignmentsData = await fetchAssignments(topic);
+      const dateWindow = parseDashboardDateFilterToWindow(
+        teacherReportDateFilter.startDate,
+        teacherReportDateFilter.endDate
+      );
+      const assignmentsData = await fetchAssignments(topic, dateWindow);
       setAssignments(assignmentsData);
       toast.success('Assignments loaded successfully');
     } catch (error) {
@@ -432,12 +448,12 @@ export const Dashboard = () => {
     }
   };
 
-  const loadStudents = async (topic: string, assignmentTitle: string) => {
+  const loadStudents = async (topic: string, assignmentTitle: string, archivedFirestoreDocId?: string) => {
     setLoadingSubmissions(true);
     try {
       // Fetch both student submissions and categories in parallel
       const [studentData, categoryData] = await Promise.all([
-        fetchStudentSubmissions(topic, assignmentTitle),
+        fetchWeeklyTestStudentSubmissions(topic, assignmentTitle, archivedFirestoreDocId),
         fetchStudentCategories(topic)
       ]);
       
@@ -461,9 +477,13 @@ export const Dashboard = () => {
     if (!selectedAssignment || !selectedTopic) return;
 
     try {
+      if (selectedAssignment.archivedFirestoreDocId) {
+        toast.error('Archived weekly tests are read-only here.');
+        return;
+      }
       const value = approvalValue === '' ? null : approvalValue;
       await updateSupervisionApproval(selectedTopic, selectedAssignment.title, studentName, value);
-      await loadStudents(selectedTopic, selectedAssignment.title);
+      await loadStudents(selectedTopic, selectedAssignment.title, selectedAssignment.archivedFirestoreDocId);
       
       if (value) {
         toast.success(`Supervision approval updated successfully for ${studentName}`);
@@ -639,6 +659,11 @@ export const Dashboard = () => {
     return matchesFilter && matchesSearch;
   });
 
+  const isSelectedWeeklyTest = (assignment: WeeklyTestListItem) =>
+    selectedAssignment != null &&
+    selectedAssignment.id === assignment.id &&
+    (selectedAssignment.archivedFirestoreDocId ?? '') === (assignment.archivedFirestoreDocId ?? '');
+
   // Handle start grading redirect
   const handleStartGrading = (topicId: string, assignmentTitle: string) => {
     const topicName = allTopics[topicId]?.name || topicId;
@@ -675,163 +700,129 @@ export const Dashboard = () => {
     };
   };
 
-  // Load ALL assignments including 100% graded ones for teacher report
+  /** Topics + weekly assignments (RTDB then Firestore) + one student fetch per assignment — reused by teacher report without double-fetch. */
   const loadAllAssignmentsForTeacherReport = async () => {
     try {
+      const dateWindow = parseDashboardDateFilterToWindow(
+        teacherReportDateFilter.startDate,
+        teacherReportDateFilter.endDate
+      );
       const topicsData = await fetchTopics();
-      const allAssignmentsData: {[topicId: string]: { id: string; data: Assignment }[]} = {};
-      
-      // Load assignments from all topics
-      const assignmentPromises = Object.keys(topicsData).map(async (topicId) => {
-        try {
-          const assignments = await fetchAssignments(topicId);
-          allAssignmentsData[topicId] = assignments;
-        } catch (error) {
-          console.error(`Error loading assignments for topic ${topicId}:`, error);
-          allAssignmentsData[topicId] = [];
-        }
-      });
+      const allAssignmentsData: {[topicId: string]: WeeklyTestListItem[]} = {};
 
-      await Promise.all(assignmentPromises);
-      
-      // Convert to flat array with all assignments (including 100% graded)
-      const allAssignmentsFlat: Array<{
+      await Promise.all(
+        Object.keys(topicsData).map(async (topicId) => {
+          try {
+            allAssignmentsData[topicId] = await fetchAssignments(topicId, dateWindow);
+          } catch (error) {
+            console.error(`Error loading assignments for topic ${topicId}:`, error);
+            allAssignmentsData[topicId] = [];
+          }
+        })
+      );
+
+      const rows: Array<{
         topicId: string;
         topicName: string;
-        assignment: { id: string; data: Assignment };
-        totalStudents: number;
-        submittedStudents: number;
-        gradedStudents: number;
+        assignment: WeeklyTestListItem;
+        studentData: StudentData;
       }> = [];
 
-      const batchSize = 5;
+      const batchSize = 12;
       for (const [topicId, assignments] of Object.entries(allAssignmentsData)) {
+        const topicName = topicsData[topicId]?.name || topicId;
         for (let i = 0; i < assignments.length; i += batchSize) {
           const batch = assignments.slice(i, i + batchSize);
-          
-          const batchPromises = batch.map(async (assignment) => {
-            try {
-              const studentData = await fetchStudentSubmissions(topicId, assignment.data.title);
-              const studentCount = Object.keys(studentData).length;
-              
-              let submittedCount = 0;
-              let gradedCount = 0;
-
-              Object.values(studentData).forEach((student: any) => {
-                if (student.submission) {
-                  submittedCount++;
-                  if (student.graded) {
-                    gradedCount++;
-                  }
-                }
-              });
-
-              // Include ALL assignments (including 100% graded)
-              return {
-                topicId,
-                topicName: topicsData[topicId]?.course?.name || topicId,
-                assignment,
-                totalStudents: studentCount,
-                submittedStudents: submittedCount,
-                gradedStudents: gradedCount
-              };
-            } catch (error) {
-              console.error(`Error checking assignment ${assignment.data.title} in topic ${topicId}:`, error);
-              return null;
-            }
-          });
-
-          const batchResults = await Promise.all(batchPromises);
-          allAssignmentsFlat.push(...batchResults.filter(item => item !== null));
+          const batchResults = await Promise.all(
+            batch.map(async (assignment) => {
+              try {
+                const studentData = await fetchWeeklyTestStudentSubmissions(
+                  topicId,
+                  assignment.data.title,
+                  assignment.archivedFirestoreDocId
+                );
+                return { topicId, topicName, assignment, studentData };
+              } catch (error) {
+                console.error(`Error checking assignment ${assignment.data.title} in topic ${topicId}:`, error);
+                return null;
+              }
+            })
+          );
+          rows.push(...batchResults.filter((item): item is NonNullable<typeof item> => item !== null));
         }
       }
 
-      return allAssignmentsFlat;
+      return rows;
     } catch (error) {
       console.error('Error loading all assignments for teacher report:', error);
       return [];
     }
   };
 
-  // Load teacher grading report
+  // Load teacher grading report (single pass over pre-fetched studentData — no duplicate RTDB/Firestore reads)
   const loadTeacherGradingReport = async () => {
     setLoadingTeacherReport(true);
     try {
       const report: {[teacherName: string]: any} = {};
-      const allAssignments = await loadAllAssignmentsForTeacherReport();
-      
-      // Filter only WeeklyTest assignments
-      const weeklyTestAssignments = allAssignments.filter(item => 
-        item.assignment.data.selectedAssignmentCategory === 'WeeklyTest'
+      const rows = await loadAllAssignmentsForTeacherReport();
+
+      const weeklyTestRows = rows.filter(
+        (item) =>
+          item.assignment.data.selectedAssignmentCategory === 'WeeklyTest' ||
+          item.assignment.archivedFirestoreDocId != null
       );
-      
-      
-      // Process assignments in batches
-      const batchSize = 5;
-      for (let i = 0; i < weeklyTestAssignments.length; i += batchSize) {
-        const batch = weeklyTestAssignments.slice(i, i + batchSize);
-        
-        const batchPromises = batch.map(async (item) => {
-          try {
-            const studentData = await fetchStudentSubmissions(item.topicId, item.assignment.data.title);
-            const topicName = allTopics[item.topicId]?.name || item.topicId;
-            
-            const gradedStudents = Object.entries(studentData).filter(([, student]) => student.graded);
-            
-              if (gradedStudents.length > 0) {
-                
-                Object.entries(studentData).forEach(([, student]) => {
-              if (student.graded) {
-                if (student.gradedByTeacher) {
-                  const teacherName = student.gradedByTeacher;
-                  const gradedAt = student.gradedAt || new Date().toISOString();
-                
-                if (!report[teacherName]) {
-                  report[teacherName] = {
-                    totalGraded: 0,
-                    assignments: []
-                  };
-                }
-                
-                report[teacherName].totalGraded++;
-                
-                // Track assignments
-                let assignmentEntry = report[teacherName].assignments.find(
-                  (a: any) => a.assignmentTitle === item.assignment.data.title && a.topicName === topicName
-                );
-                
-                if (!assignmentEntry) {
-                  assignmentEntry = {
-                    assignmentTitle: item.assignment.data.title,
-                    topicName: topicName,
-                    gradedCount: 0,
-                    lastGraded: gradedAt,
-                    topicId: item.topicId,
-                    assignmentId: item.assignment.id
-                  };
-                  report[teacherName].assignments.push(assignmentEntry);
-                }
-                
-                assignmentEntry.gradedCount++;
-                if (new Date(gradedAt) > new Date(assignmentEntry.lastGraded)) {
-                  assignmentEntry.lastGraded = gradedAt;
-                }
-                } else {
-                }
-              }
-              });
-            } else {
-            }
-          } catch (error) {
-            console.error(`Error processing assignment ${item.assignment.data.title}:`, error);
+
+      for (const item of weeklyTestRows) {
+        const { studentData } = item;
+        const topicName = item.topicName;
+
+        const gradedStudents = Object.entries(studentData).filter(([, student]) => student.graded);
+        if (gradedStudents.length === 0) continue;
+
+        Object.entries(studentData).forEach(([, student]) => {
+          if (!student.graded || !student.gradedByTeacher) return;
+
+          const teacherName = student.gradedByTeacher;
+          const gradedAt = student.gradedAt || new Date().toISOString();
+
+          if (!report[teacherName]) {
+            report[teacherName] = {
+              totalGraded: 0,
+              assignments: []
+            };
+          }
+
+          report[teacherName].totalGraded++;
+
+          let assignmentEntry = report[teacherName].assignments.find(
+            (a: any) =>
+              a.assignmentTitle === item.assignment.data.title &&
+              a.topicName === topicName &&
+              a.assignmentId === item.assignment.id
+          );
+
+          if (!assignmentEntry) {
+            assignmentEntry = {
+              assignmentTitle: item.assignment.data.title,
+              topicName: topicName,
+              gradedCount: 0,
+              lastGraded: gradedAt,
+              topicId: item.topicId,
+              assignmentId: item.assignment.id,
+              archivedFirestoreDocId: item.assignment.archivedFirestoreDocId
+            };
+            report[teacherName].assignments.push(assignmentEntry);
+          }
+
+          assignmentEntry.gradedCount++;
+          if (new Date(gradedAt) > new Date(assignmentEntry.lastGraded)) {
+            assignmentEntry.lastGraded = gradedAt;
           }
         });
-        
-        await Promise.all(batchPromises);
       }
-      
+
       setTeacherGradingReport(report);
-    } catch (error) {
+  } catch (error) {
       console.error('Error loading teacher grading report:', error);
       toast.error('Error loading teacher grading report');
     } finally {
@@ -840,9 +831,15 @@ export const Dashboard = () => {
   };
 
   // Load assignment details when clicked
-  const loadAssignmentDetails = async (teacherName: string, assignmentTitle: string, topicName: string, topicId: string) => {
+  const loadAssignmentDetails = async (
+    teacherName: string,
+    assignmentTitle: string,
+    topicName: string,
+    topicId: string,
+    archivedFirestoreDocId?: string
+  ) => {
     try {
-      const studentData = await fetchStudentSubmissions(topicId, assignmentTitle);
+      const studentData = await fetchWeeklyTestStudentSubmissions(topicId, assignmentTitle, archivedFirestoreDocId);
       
       // Filter students graded by this teacher
       const gradedStudents = Object.entries(studentData)
@@ -877,6 +874,7 @@ export const Dashboard = () => {
         lastGraded: string;
         topicId: string;
         assignmentId: string;
+        archivedFirestoreDocId?: string;
       }>;
     }]>;
     
@@ -924,6 +922,7 @@ export const Dashboard = () => {
             lastGraded: string;
             topicId: string;
             assignmentId: string;
+            archivedFirestoreDocId?: string;
           }>;
         }];
       }).filter(([, data]) => data.assignments.length > 0);
@@ -1089,7 +1088,10 @@ export const Dashboard = () => {
                     )}
                   </div>
                   
-                  {/* Date Filter */}
+                  {/* Date Filter — also filters Weekly Tests list, pending/unmarked, RTDB + Firestore fetches */}
+                  <p className="text-xs text-gray-500">
+                    Default: last {WEEKLY_TEST_LOOKBACK_DAYS} days. Changing dates reloads assignments (Realtime + archive), pending queues, and this report.
+                  </p>
                   <div className="flex flex-col sm:flex-row gap-4">
                     <div className="flex-1">
                       <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1127,10 +1129,12 @@ export const Dashboard = () => {
                     </div>
                     <div className="flex items-end">
                       <button
-                        onClick={() => setTeacherReportDateFilter({ startDate: '', endDate: '' })}
+                        type="button"
+                        onClick={() => setTeacherReportDateFilter(getTeacherReportDefaultDateRange())}
                         className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm font-medium"
+                        title={`Reset to last ${WEEKLY_TEST_LOOKBACK_DAYS} days (same as weekly test window)`}
                       >
-                        Clear Dates
+                        Reset range
                       </button>
                     </div>
                   </div>
@@ -1180,19 +1184,37 @@ export const Dashboard = () => {
                           </div>
                           
                           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {data.assignments.map((assignment, index) => (
+                            {data.assignments.map((assignment) => (
                               <div 
-                                key={index} 
+                                key={`${assignment.topicId}-${assignment.assignmentId}-${assignment.assignmentTitle}`}
                                 className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md hover:border-blue-300 cursor-pointer transition-all duration-200"
-                                onClick={() => loadAssignmentDetails(teacherName, assignment.assignmentTitle, assignment.topicName, assignment.topicId)}
+                                onClick={() =>
+                                  loadAssignmentDetails(
+                                    teacherName,
+                                    assignment.assignmentTitle,
+                                    assignment.topicName,
+                                    assignment.topicId,
+                                    assignment.archivedFirestoreDocId
+                                  )
+                                }
                               >
-                                <div className="flex items-start justify-between mb-2">
-                                  <h4 className="font-semibold text-gray-800 text-sm">
+                                <div className="flex items-start justify-between gap-2 mb-2">
+                                  <h4 className="font-semibold text-gray-800 text-sm leading-snug">
                                     {assignment.assignmentTitle}
                                   </h4>
-                                  <span className="bg-green-100 text-green-800 text-xs px-2 py-1 rounded-full font-medium">
-                                    {assignment.gradedCount} graded
-                                  </span>
+                                  <div className="flex flex-col items-end gap-1 shrink-0">
+                                    {assignment.archivedFirestoreDocId ? (
+                                      <span
+                                        className="rounded-md border border-slate-500/60 bg-slate-800 text-white text-[10px] font-bold uppercase tracking-wide px-2 py-0.5"
+                                        title="Archived assignment"
+                                      >
+                                        Archive
+                                      </span>
+                                    ) : null}
+                                    <span className="bg-green-100 text-green-800 text-xs px-2 py-1 rounded-full font-medium">
+                                      {assignment.gradedCount} graded
+                                    </span>
+                                  </div>
                                 </div>
                                 <div className="text-xs text-gray-600 space-y-1">
                                   <div className="flex items-center gap-1">
@@ -1269,8 +1291,8 @@ export const Dashboard = () => {
                       
                       
                       <div className="space-y-4">
-                        {selectedAssignmentDetails.students.map((student, index) => (
-                          <div key={index} className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+                        {selectedAssignmentDetails.students.map((student) => (
+                          <div key={student.studentName} className="border border-gray-200 rounded-lg p-4 bg-gray-50">
                             <div className="flex items-center justify-between mb-2">
                               <h4 className="font-semibold text-gray-800">{student.studentName}</h4>
                               <div className="flex items-center gap-4">
@@ -1394,14 +1416,24 @@ export const Dashboard = () => {
                         
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                           {courseAssignments.map((item) => (
-                            <button
+                            <div
                               key={`${item.topicId}-${item.assignment.id}`}
+                              className="text-left p-4 rounded-lg border border-orange-200 bg-gradient-to-br from-orange-50 to-yellow-50 hover:from-orange-100 hover:to-yellow-100 hover:shadow-lg transition-all duration-200 group cursor-pointer"
+                              role="button"
+                              tabIndex={0}
                               onClick={() => {
                                 setSelectedCourse({id: Number(courseId), title: courseName});
                                 setSelectedTopic(item.topicId);
                                 setSelectedAssignment({ id: item.assignment.id, title: item.assignment.data.title });
                               }}
-                              className="text-left p-4 rounded-lg border border-orange-200 bg-gradient-to-br from-orange-50 to-yellow-50 hover:from-orange-100 hover:to-yellow-100 hover:shadow-lg transition-all duration-200 group"
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  setSelectedCourse({ id: Number(courseId), title: courseName });
+                                  setSelectedTopic(item.topicId);
+                                  setSelectedAssignment({ id: item.assignment.id, title: item.assignment.data.title });
+                                }
+                              }}
                             >
                               <div className="flex items-start justify-between mb-2">
                                 <h4 className="font-bold text-base text-gray-800 group-hover:text-orange-800 transition-colors">
@@ -1457,6 +1489,7 @@ export const Dashboard = () => {
                               </div>
 
                               <button
+                                type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleStartGrading(item.topicId, item.assignment.data.title);
@@ -1465,7 +1498,7 @@ export const Dashboard = () => {
                               >
                                 Start Grading
                               </button>
-                            </button>
+                            </div>
                           ))}
                         </div>
                       </div>
@@ -1605,21 +1638,35 @@ export const Dashboard = () => {
               <div className="space-y-4 py-3 max-h-[50vh] overflow-y-auto pr-2 flex flex-col items-center">
                 {filteredAssignments.map((assignment) => (
                     <button
-                      key={assignment.id}
-                      onClick={() => setSelectedAssignment({ id: assignment.id, title: assignment.data.title })}
+                      key={`${assignment.id}-${assignment.archivedFirestoreDocId ?? 'live'}`}
+                      onClick={() =>
+                        setSelectedAssignment({
+                          id: assignment.id,
+                          title: assignment.data.title,
+                          archivedFirestoreDocId: assignment.archivedFirestoreDocId,
+                        })
+                      }
                     className={`w-full max-w-sm p-6 rounded-xl text-left transition-all duration-200 border backdrop-blur-sm mt-4 ${
-                        selectedAssignment?.id === assignment.id
+                        isSelectedWeeklyTest(assignment)
                         ? 'border-[#b30104] border-2 bg-gradient-to-r from-[#b30104]/10 to-[#b30104]/5 shadow-xl transform scale-[1.01] ring-2 ring-[#b30104]/20'
                           : 'border-gray-200 bg-gradient-to-r from-gray-50/80 to-white/80 hover:bg-white hover:border-[#b30104]/30 hover:shadow-lg'
                       }`}
                     >
                       <div className="flex items-start justify-between mb-3">
                       <h3 className={`font-bold text-xl ${
-                        selectedAssignment?.id === assignment.id 
+                        isSelectedWeeklyTest(assignment)
                           ? 'text-[#b30104]' 
                           : 'text-gray-800'
                       }`}>{assignment.data.title}</h3>
-                      <div className="flex gap-2">
+                      <div className="flex gap-2 flex-wrap justify-end items-start">
+                        {assignment.archivedFirestoreDocId ? (
+                          <span
+                            className="shrink-0 rounded-md border border-slate-500/60 bg-slate-800 text-white text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 shadow-sm"
+                            title="Firestore archive (read-only)"
+                          >
+                            Archive
+                          </span>
+                        ) : null}
                         {isOverdue(assignment.data.deadline) ? (
                           <span className="bg-gradient-to-r from-[#b30104] to-[#7a0103] text-white text-xs px-3 py-1 rounded-full font-medium shadow-lg">Overdue</span>
                         ) : isInProgress(assignment.data.deadline) ? (
@@ -1631,7 +1678,7 @@ export const Dashboard = () => {
                     {/* Creation Date */}
                     <div className="mb-2">
                       <div className={`flex items-center gap-2 p-2 rounded-lg transition-all duration-200 ${
-                        selectedAssignment?.id === assignment.id 
+                        isSelectedWeeklyTest(assignment)
                           ? 'bg-[#b30104]/5 border border-[#b30104]/20' 
                           : 'bg-gray-50/50'
                       }`}>
@@ -1642,15 +1689,15 @@ export const Dashboard = () => {
                     
                       <div className="text-base text-gray-600 space-y-1">
                       <div className={`flex items-center gap-2 p-2 rounded-lg transition-all duration-200 ${
-                        selectedAssignment?.id === assignment.id 
+                        isSelectedWeeklyTest(assignment)
                           ? 'bg-[#b30104]/5 border border-[#b30104]/20' 
                           : 'bg-gray-50/50'
                       }`}>
                         <span className="text-[#b30104] text-sm">📅</span>
-                        <span className="text-sm font-medium">Deadline: {formatDeadline(assignment.data.deadline)}</span>
+                        <span className="text-sm font-medium">Deadline: {assignment.data.deadline ? formatDeadline(assignment.data.deadline) : 'N/A'}</span>
                         </div>
                       <div className={`flex items-center gap-2 p-2 rounded-lg transition-all duration-200 ${
-                        selectedAssignment?.id === assignment.id 
+                        isSelectedWeeklyTest(assignment)
                           ? 'bg-[#b30104]/5 border border-[#b30104]/20' 
                           : 'bg-gray-50/50'
                       }`}>
@@ -1658,7 +1705,7 @@ export const Dashboard = () => {
                         <span className="text-sm font-medium">{assignment.data.totalMarks} marks • {assignment.data.weightage} weightage</span>
                         </div>
                       <div className={`flex items-center gap-2 p-2 rounded-lg transition-all duration-200 ${
-                        selectedAssignment?.id === assignment.id 
+                        isSelectedWeeklyTest(assignment)
                           ? 'bg-[#b30104]/5 border border-[#b30104]/20' 
                           : 'bg-gray-50/50'
                       }`}>
@@ -1693,7 +1740,18 @@ export const Dashboard = () => {
                       {loadingSubmissions && (
                         <div className="w-5 h-5 border-2 border-[#b30104] border-t-transparent rounded-full animate-spin"></div>
                       )}
+                      {selectedAssignment.archivedFirestoreDocId ? (
+                        <span
+                          className="ml-2 rounded-md border border-amber-800/40 bg-amber-100 text-amber-950 text-[11px] font-bold uppercase tracking-wide px-2 py-0.5"
+                          title="Data from Firestore archive; grading actions disabled"
+                        >
+                          Archive
+                        </span>
+                      ) : null}
                   </h2>
+                    {selectedAssignment.archivedFirestoreDocId ? (
+                      <p className="mt-1 text-xs text-slate-600">Read-only — from archived weekly test</p>
+                    ) : null}
                     <div className="flex gap-6 text-base text-gray-600">
                     <div className="flex items-center gap-2">
                         <div className="w-2 h-2 bg-gray-600 rounded-full"></div>
@@ -1754,9 +1812,9 @@ export const Dashboard = () => {
                       
                     <tbody className="bg-white/50 backdrop-blur-sm divide-y divide-gray-100">
                         {Object.entries(groupStudentsByCategory()).map(([category, categoryStudents]) => (
-                          <>
+                          <Fragment key={category}>
                             {/* Category Header Row */}
-                            <tr key={`category-${category}`} className="bg-gradient-to-r from-gray-100/80 to-gray-200/80">
+                            <tr className="bg-gradient-to-r from-gray-100/80 to-gray-200/80">
                               <td colSpan={10} className="px-6 py-4">
                                 <div className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-gray-100 to-gray-200 border border-gray-300 rounded-lg shadow-sm">
                                   <span className="text-lg font-bold text-red-600">{category}</span>
@@ -1833,7 +1891,8 @@ export const Dashboard = () => {
                                   <select
                                     value={data.supervisionApproval || ''}
                                     onChange={(e) => handleSupervisionApprovalChange(name, e.target.value)}
-                                    className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#b30104] focus:border-transparent outline-none transition bg-white/80 backdrop-blur-sm shadow-sm hover:shadow-md focus:shadow-lg text-sm"
+                                    disabled={!!selectedAssignment.archivedFirestoreDocId}
+                                    className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#b30104] focus:border-transparent outline-none transition bg-white/80 backdrop-blur-sm shadow-sm hover:shadow-md focus:shadow-lg text-sm disabled:opacity-50"
                                     style={{minWidth: '120px', fontSize: '12px'}}
                                   >
                                     <option value="">Select Status</option>
@@ -1865,7 +1924,7 @@ export const Dashboard = () => {
                                       const gradingUrl = `${GRADING_BASE_URL}/assignment/${topicName}/teacher/${selectedAssignment?.title}/grading/${name}`;
                                       window.open(gradingUrl, '_blank');
                                     }}
-                                    disabled={!data.submission}
+                                    disabled={!data.submission || !!selectedAssignment.archivedFirestoreDocId}
                                     className="inline-flex items-center gap-2 bg-gradient-to-r from-[#b30104] to-[#7a0103] hover:from-[#7a0103] hover:to-[#b30104] text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 disabled:opacity-50 hover:scale-105 shadow-lg hover:shadow-xl"
                                   >
                                     Start Grading
@@ -1873,7 +1932,7 @@ export const Dashboard = () => {
                           </td>
                         </tr>
                             ))}
-                          </>
+                          </Fragment>
                       ))}
                     </tbody>
                   </table>

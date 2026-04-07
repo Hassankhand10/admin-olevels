@@ -40,3 +40,11 @@ export interface AssignmentsData {
 export interface StudentData {
   [studentName: string]: StudentSubmission;
 }
+
+/** Weekly test row: Realtime DB and/or Firestore Archived-Assignments */
+export interface WeeklyTestListItem {
+  id: string;
+  data: Assignment;
+  /** Set when this row was loaded from Firestore `Archived-Assignments` */
+  archivedFirestoreDocId?: string;
+}
