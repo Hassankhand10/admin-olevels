@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FileText, BarChart } from 'lucide-react';
+import { FileText, BarChart, Sparkles } from 'lucide-react';
 import OLevelsLogo from '../assets/OLevels-logo-color.png';
 
 interface CardData {
@@ -30,6 +30,14 @@ export const HomePage = () => {
       icon: BarChart,
       description: 'View and analyze student performance reports',
       onClick: () => navigate('/dashboard/student-performance-report'),
+      isMain: true
+    },
+    {
+      id: 'ai-graded-assignments',
+      title: 'AI GRADED ASSIGNMENT',
+      icon: Sparkles,
+      description: 'Track AI grading status for weekly tests & past papers',
+      onClick: () => navigate('/dashboard/ai-graded-assignments'),
       isMain: true
     },
   ];

@@ -1090,7 +1090,8 @@ export const Dashboard = () => {
                   
                   {/* Date Filter — also filters Weekly Tests list, pending/unmarked, RTDB + Firestore fetches */}
                   <p className="text-xs text-gray-500">
-                    Default: last {WEEKLY_TEST_LOOKBACK_DAYS} days. Changing dates reloads assignments (Realtime + archive), pending queues, and this report.
+                    Default: 1 month (last {WEEKLY_TEST_LOOKBACK_DAYS} days). Changing dates reloads assignments
+                    (Realtime + archive), pending queues, and this report.
                   </p>
                   <div className="flex flex-col sm:flex-row gap-4">
                     <div className="flex-1">
@@ -1132,7 +1133,7 @@ export const Dashboard = () => {
                         type="button"
                         onClick={() => setTeacherReportDateFilter(getTeacherReportDefaultDateRange())}
                         className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm font-medium"
-                        title={`Reset to last ${WEEKLY_TEST_LOOKBACK_DAYS} days (same as weekly test window)`}
+                        title={`Reset to 1 month / last ${WEEKLY_TEST_LOOKBACK_DAYS} days (weekly test window)`}
                       >
                         Reset range
                       </button>

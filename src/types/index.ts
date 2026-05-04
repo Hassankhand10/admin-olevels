@@ -7,6 +7,10 @@ export interface Assignment {
   selectedAssignmentCategory: string;
   teacherName: string;
   creationDate?: number;
+  /** Grading mode for weekly tests / past paper practice. "ai" | "peer" | undefined. */
+  weeklyTestGradingMode?: string;
+  /** AI grading status. e.g. "AI_GRADING_STATUS_IN_PROCESS" while AI is grading. */
+  aiGradingStatus?: string;
 }
 
 export interface StudentSubmission {

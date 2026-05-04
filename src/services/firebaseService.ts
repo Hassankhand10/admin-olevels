@@ -3,15 +3,14 @@ import { collection, query, where, getDocs, Timestamp, orderBy } from 'firebase/
 import { database, firestore } from '../config/firebase';
 import { Assignment, StudentData, WeeklyTestListItem } from '../types';
 
-/** Rolling window for weekly test lists (Realtime + Firestore archive). 45 days for faster loads. */
-export const WEEKLY_TEST_LOOKBACK_DAYS = 45;
+export const WEEKLY_TEST_LOOKBACK_DAYS = 30;
 export const WEEKLY_TEST_LOOKBACK_MS = WEEKLY_TEST_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
 
 export function getWeeklyTestCutoffDate(): Date {
   return new Date(Date.now() - WEEKLY_TEST_LOOKBACK_MS);
 }
 
-/** Default `<input type="date">` range for Teacher Grading Report — matches weekly-test lookback. */
+/** Default `<input type="date">` range for dashboard / teacher report — last 30 days (1 month). */
 export function getTeacherReportDefaultDateRange(): { startDate: string; endDate: string } {
   const pad = (n: number) => String(n).padStart(2, '0');
   const toYmd = (d: Date) =>
@@ -264,7 +263,7 @@ export const fetchTopics = async (): Promise<{[key: string]: {course: any, name?
   }
 };
 
-/** Weekly tests only: Realtime DB + Firestore Archived-Assignments, filtered by `dateWindow` (default: last ~45 days). */
+/** Weekly tests only: Realtime DB + Firestore Archived-Assignments, filtered by `dateWindow` (default: last 30 days). */
 export const fetchAssignments = async (
   topic: string,
   dateWindow?: AssignmentDateWindow
@@ -402,7 +401,6 @@ export const fetchAllStudents = async (): Promise<Array<{name: string, studentId
   }
 };
 
-// Fetch all assignments (not just WeeklyTest)
 export const fetchAllAssignments = async (topic: string): Promise<{ id: string; data: Assignment }[]> => {
   try {
     const assignmentRef = ref(database, `assignments/topics/${topic}/assignment`);
@@ -422,6 +420,131 @@ export const fetchAllAssignments = async (topic: string): Promise<{ id: string; 
     console.error('Error fetching all assignments:', error);
     return [];
   }
+};
+
+export const PAST_PAPER_PRACTICE_CATEGORIES = ['PastPaper Practice', 'PastPaperPractice'] as const;
+
+export function isPastPaperPracticeCategory(category: string | undefined): boolean {
+  if (!category) return false;
+  return (PAST_PAPER_PRACTICE_CATEGORIES as readonly string[]).includes(category);
+}
+
+export function isWeeklyTestOrPastPaperCategory(category: string | undefined): boolean {
+  if (!category) return false;
+  return category === WEEKLY_TEST_CATEGORY || isPastPaperPracticeCategory(category);
+}
+
+export const AI_GRADING_STATUS_IN_PROCESS = 'AI_GRADING_STATUS_IN_PROCESS' as const;
+
+export function isPeerWeeklyTestGradingMode(mode: string | null | undefined): boolean {
+  if (mode == null) return false;
+  if (typeof mode !== 'string') return false;
+  return mode.trim().toLowerCase() === 'peer';
+}
+
+export type AIGradingStatus = 'completed' | 'in_process' | 'awaiting';
+
+export interface AIGradedAssignmentItem {
+  topicId: string;
+  topicName: string;
+  courseId: string | number | null;
+  courseName: string | null;
+  assignment: { id: string; data: Assignment };
+  totalStudents: number;
+  submittedStudents: number;
+  gradedStudents: number;
+  status: AIGradingStatus;
+}
+
+/**
+ * Eligible only when all hold:
+ * 1) Category is WeeklyTest or Past Paper Practice (`PastPaper Practice` or legacy `PastPaperPractice`).
+ * 2) `weeklyTestGradingMode` is not peer (missing / null / "ai" / anything else → AI-graded).
+ * 3) Submission deadline has passed.
+ */
+export function isAIGradedEligible(data: Assignment, now: Date = new Date()): boolean {
+  if (!isWeeklyTestOrPastPaperCategory(data.selectedAssignmentCategory)) return false;
+
+  if (isPeerWeeklyTestGradingMode(data.weeklyTestGradingMode)) return false;
+
+  if (!data.deadline) return false;
+  const deadline = new Date(data.deadline);
+  if (isNaN(deadline.getTime())) return false;
+  if (deadline.getTime() > now.getTime()) return false;
+
+  return true;
+}
+
+export const fetchAIGradedAssignmentsForTopic = async (
+  topicId: string,
+  topicMeta?: { course?: { id?: string | number; name?: string } | null; name?: string }
+): Promise<AIGradedAssignmentItem[]> => {
+  const now = new Date();
+  const topicName = topicMeta?.name || topicId;
+  const courseId = topicMeta?.course?.id ?? null;
+  const courseName = topicMeta?.course?.name ?? null;
+
+  const assignments = await fetchAllAssignments(topicId);
+
+  const eligible = assignments.filter((a) => isAIGradedEligible(a.data, now));
+
+  const enriched: AIGradedAssignmentItem[] = [];
+  const batchSize = 12;
+  for (let i = 0; i < eligible.length; i += batchSize) {
+    const batch = eligible.slice(i, i + batchSize);
+    const results = await Promise.all(
+      batch.map(async (a) => {
+        try {
+          const studentData = await fetchStudentSubmissions(topicId, a.data.title);
+          const totalStudents = Object.keys(studentData).length;
+          let submittedStudents = 0;
+          let gradedStudents = 0;
+          Object.values(studentData).forEach((s) => {
+            if (s?.submission) {
+              submittedStudents++;
+              if (s.graded) gradedStudents++;
+            }
+          });
+
+          let status: AIGradingStatus;
+          if (a.data.aiGradingStatus === AI_GRADING_STATUS_IN_PROCESS) {
+            status = 'in_process';
+          } else if (submittedStudents > 0 && gradedStudents === submittedStudents) {
+            status = 'completed';
+          } else {
+            status = 'awaiting';
+          }
+
+          return {
+            topicId,
+            topicName,
+            courseId,
+            courseName,
+            assignment: a,
+            totalStudents,
+            submittedStudents,
+            gradedStudents,
+            status,
+          } satisfies AIGradedAssignmentItem;
+        } catch (error) {
+          console.error(
+            `Error loading submissions for ${topicId} / ${a.data.title}:`,
+            error
+          );
+          return null;
+        }
+      })
+    );
+    enriched.push(...results.filter((r): r is AIGradedAssignmentItem => r !== null));
+  }
+
+  enriched.sort((a, b) => {
+    const da = a.assignment.data.deadline ? new Date(a.assignment.data.deadline).getTime() : 0;
+    const db = b.assignment.data.deadline ? new Date(b.assignment.data.deadline).getTime() : 0;
+    return db - da;
+  });
+
+  return enriched;
 };
 
 // Fetch classes from Firestore
