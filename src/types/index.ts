@@ -7,10 +7,12 @@ export interface Assignment {
   selectedAssignmentCategory: string;
   teacherName: string;
   creationDate?: number;
-  /** Grading mode for weekly tests / past paper practice. "ai" | "peer" | undefined. */
+  /** Grading mode for weekly tests / past paper practice. `"ai"` | `"peer"` | undefined. */
   weeklyTestGradingMode?: string;
-  /** AI grading status. e.g. "AI_GRADING_STATUS_IN_PROCESS" while AI is grading. */
+  /** While AI is grading: typically `AI_GRADING_STATUS_IN_PROCESS` (see `isAiGradingStatusInProcess` in firebaseService). */
   aiGradingStatus?: string;
+  /** Assignment-level AI queue state, e.g. `PENDING` — compared case-insensitively in admin dashboard logic. */
+  aiAssignmentStatus?: string;
 }
 
 export interface StudentSubmission {

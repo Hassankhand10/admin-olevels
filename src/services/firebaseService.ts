@@ -72,6 +72,14 @@ function coerceFirestoreTimestampLike(raw: unknown): Date | null {
     const d = (raw as { toDate: () => Date }).toDate();
     return d instanceof Date && !isNaN(d.getTime()) ? d : null;
   }
+  // RTDB / JSON Firestore-style map: { seconds, nanoseconds? }
+  if (typeof raw === 'object' && raw !== null && 'seconds' in raw) {
+    const sec = (raw as { seconds: unknown }).seconds;
+    if (typeof sec === 'number' && Number.isFinite(sec)) {
+      const d = new Date(sec * 1000);
+      return !isNaN(d.getTime()) ? d : null;
+    }
+  }
   return null;
 }
 
@@ -401,26 +409,38 @@ export const fetchAllStudents = async (): Promise<Array<{name: string, studentId
   }
 };
 
-export const fetchAllAssignments = async (topic: string): Promise<{ id: string; data: Assignment }[]> => {
+/**
+ * Assignment definitions for a topic from **Firebase Realtime Database only**
+ * (`assignments/topics/{topic}/assignment`). Does not read Firestore or archives.
+ */
+export const fetchRealtimeAssignmentsForTopic = async (
+  topic: string
+): Promise<{ id: string; data: Assignment }[]> => {
   try {
     const assignmentRef = ref(database, `assignments/topics/${topic}/assignment`);
     const snapshot = await get(assignmentRef);
-    
+
     if (snapshot.exists()) {
       const assignments = snapshot.val();
-      const allAssignments = Object.entries(assignments)
-        .map(([id, data]) => {
-          return { id, data: data as Assignment };
-        });
-      
-      return allAssignments;
+      return Object.entries(assignments).map(([id, raw]) => {
+        const typed = raw as Assignment;
+        const resolvedMode = resolveWeeklyTestGradingMode(typed);
+        const data: Assignment =
+          resolvedMode !== undefined
+            ? { ...typed, weeklyTestGradingMode: resolvedMode }
+            : typed;
+        return { id, data };
+      });
     }
     return [];
   } catch (error) {
-    console.error('Error fetching all assignments:', error);
+    console.error('Error fetching Realtime assignments:', error);
     return [];
   }
 };
+
+/** Same as {@link fetchRealtimeAssignmentsForTopic} (Realtime DB only). */
+export const fetchAllAssignments = fetchRealtimeAssignmentsForTopic;
 
 export const PAST_PAPER_PRACTICE_CATEGORIES = ['PastPaper Practice', 'PastPaperPractice'] as const;
 
@@ -431,10 +451,62 @@ export function isPastPaperPracticeCategory(category: string | undefined): boole
 
 export function isWeeklyTestOrPastPaperCategory(category: string | undefined): boolean {
   if (!category) return false;
-  return category === WEEKLY_TEST_CATEGORY || isPastPaperPracticeCategory(category);
+  return (
+    category === WEEKLY_TEST_CATEGORY ||
+    category === 'WeeklyTest preparation' ||
+    isPastPaperPracticeCategory(category)
+  );
 }
 
 export const AI_GRADING_STATUS_IN_PROCESS = 'AI_GRADING_STATUS_IN_PROCESS' as const;
+
+/** Lowercase trimmed string for stable comparisons (`''` if missing / not a string). */
+export function normalizeAiStatusToken(raw: unknown): string {
+  if (raw == null || typeof raw !== 'string') return '';
+  return raw.trim().toLowerCase();
+}
+
+/**
+ * Reads `aiAssignmentStatus` from RTDB-shaped assignment objects (camelCase or snake_case).
+ */
+export function pickAiAssignmentStatus(data: Assignment): string | undefined {
+  const r = data as unknown as Record<string, unknown>;
+  const pick = (v: unknown): string | undefined => {
+    if (v == null) return undefined;
+    if (typeof v === 'string') {
+      const t = v.trim();
+      return t === '' ? undefined : t;
+    }
+    return undefined;
+  };
+  return (
+    pick(data.aiAssignmentStatus) ??
+    pick(r.ai_assignment_status) ??
+    pick(r.aiAssignment_status)
+  );
+}
+
+/** `PENDING` / `pending` / etc. from {@link pickAiAssignmentStatus}. */
+export function isAiAssignmentStatusPending(data: Assignment): boolean {
+  return normalizeAiStatusToken(pickAiAssignmentStatus(data)) === 'pending';
+}
+
+/** `ACTIVE` / `active` / etc. from {@link pickAiAssignmentStatus}. */
+export function isAiAssignmentStatusActive(data: Assignment): boolean {
+  return normalizeAiStatusToken(pickAiAssignmentStatus(data)) === 'active';
+}
+
+/**
+ * True only when assignment is actively in AI grading (canonical RTDB value, or same words with different casing/spacing).
+ * Comparisons use {@link normalizeAiStatusToken}; any other non-empty value is **not** in-process.
+ */
+export function isAiGradingStatusInProcess(raw: unknown): boolean {
+  const norm = normalizeAiStatusToken(raw);
+  if (!norm) return false;
+  if (norm === AI_GRADING_STATUS_IN_PROCESS.toLowerCase()) return true;
+  const asPhrase = norm.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+  return asPhrase === 'ai grading in process';
+}
 
 export function isPeerWeeklyTestGradingMode(mode: string | null | undefined): boolean {
   if (mode == null) return false;
@@ -442,7 +514,41 @@ export function isPeerWeeklyTestGradingMode(mode: string | null | undefined): bo
   return mode.trim().toLowerCase() === 'peer';
 }
 
-export type AIGradingStatus = 'completed' | 'in_process' | 'awaiting';
+/**
+ * Reads grading mode from RTDB-shaped objects (camelCase or snake_case aliases).
+ */
+export function resolveWeeklyTestGradingMode(data: Assignment): string | undefined {
+  const r = data as unknown as Record<string, unknown>;
+  const pick = (v: unknown): string | undefined => {
+    if (v == null) return undefined;
+    if (typeof v === 'string') {
+      const t = v.trim();
+      return t === '' ? undefined : t;
+    }
+    return undefined;
+  };
+  return (
+    pick(data.weeklyTestGradingMode) ??
+    pick(r.weekly_test_grading_mode) ??
+    pick(r.weeklyTest_grading_mode) ??
+    pick(r.gradingMode) ??
+    pick(r.grading_mode)
+  );
+}
+
+/** Only explicit `"ai"` (case-insensitive, trimmed). Null/undefined/other modes → false. */
+export function isExplicitAiWeeklyTestGradingMode(mode: string | null | undefined): boolean {
+  if (typeof mode !== 'string') return false;
+  return mode.trim().toLowerCase() === 'ai';
+}
+
+/** Dashboard bucket for an AI-mode assignment (deadline passed). */
+export type AIGradingStatus =
+  | 'awaiting'
+  | 'pending_evaluation'
+  | 'ready_for_evaluation'
+  | 'in_process'
+  | 'completed';
 
 export interface AIGradedAssignmentItem {
   topicId: string;
@@ -459,22 +565,31 @@ export interface AIGradedAssignmentItem {
 /**
  * Eligible only when all hold:
  * 1) Category is WeeklyTest or Past Paper Practice (`PastPaper Practice` or legacy `PastPaperPractice`).
- * 2) `weeklyTestGradingMode` is not peer (missing / null / "ai" / anything else → AI-graded).
- * 3) Submission deadline has passed.
+ * 2) Grading mode resolves to explicit `"ai"` (see `resolveWeeklyTestGradingMode` for RTDB key aliases).
+ * 3) Submission deadline has passed (supports ISO string, ms number, Firestore-like `{seconds}` maps).
  */
 export function isAIGradedEligible(data: Assignment, now: Date = new Date()): boolean {
   if (!isWeeklyTestOrPastPaperCategory(data.selectedAssignmentCategory)) return false;
 
-  if (isPeerWeeklyTestGradingMode(data.weeklyTestGradingMode)) return false;
+  if (!isExplicitAiWeeklyTestGradingMode(resolveWeeklyTestGradingMode(data))) return false;
 
-  if (!data.deadline) return false;
-  const deadline = new Date(data.deadline);
-  if (isNaN(deadline.getTime())) return false;
-  if (deadline.getTime() > now.getTime()) return false;
+  const r = data as unknown as Record<string, unknown>;
+  const deadlineAt =
+    coerceFirestoreTimestampLike(data.deadline ?? r.deadline) ??
+    coerceFirestoreTimestampLike(r.submissionDeadline);
+  if (!deadlineAt) return false;
+  if (deadlineAt.getTime() > now.getTime()) return false;
 
   return true;
 }
 
+/**
+ * AI-graded dashboard rows for one topic. Assignment metadata and student submission counts
+ * both come from **Realtime Database only** (no Firestore `Archived-*` merge).
+ *
+ * Status (order): {@link isAiGradingStatusInProcess} → `in_process`; then all submitters graded → `completed`;
+ * then {@link isAiAssignmentStatusPending} → `pending_evaluation`; then {@link isAiAssignmentStatusActive} → `ready_for_evaluation`; else `awaiting`.
+ */
 export const fetchAIGradedAssignmentsForTopic = async (
   topicId: string,
   topicMeta?: { course?: { id?: string | number; name?: string } | null; name?: string }
@@ -484,7 +599,7 @@ export const fetchAIGradedAssignmentsForTopic = async (
   const courseId = topicMeta?.course?.id ?? null;
   const courseName = topicMeta?.course?.name ?? null;
 
-  const assignments = await fetchAllAssignments(topicId);
+  const assignments = await fetchRealtimeAssignmentsForTopic(topicId);
 
   const eligible = assignments.filter((a) => isAIGradedEligible(a.data, now));
 
@@ -506,16 +621,22 @@ export const fetchAIGradedAssignmentsForTopic = async (
             }
           });
 
+          const assignmentNorm = normalizeAiStatusToken(pickAiAssignmentStatus(a.data));
+
           let status: AIGradingStatus;
-          if (a.data.aiGradingStatus === AI_GRADING_STATUS_IN_PROCESS) {
+          if (isAiGradingStatusInProcess(a.data.aiGradingStatus)) {
             status = 'in_process';
           } else if (submittedStudents > 0 && gradedStudents === submittedStudents) {
             status = 'completed';
+          } else if (assignmentNorm === 'pending') {
+            status = 'pending_evaluation';
+          } else if (assignmentNorm === 'active') {
+            status = 'ready_for_evaluation';
           } else {
             status = 'awaiting';
           }
 
-          return {
+          const row: AIGradedAssignmentItem = {
             topicId,
             topicName,
             courseId,
@@ -525,7 +646,8 @@ export const fetchAIGradedAssignmentsForTopic = async (
             submittedStudents,
             gradedStudents,
             status,
-          } satisfies AIGradedAssignmentItem;
+          };
+          return row;
         } catch (error) {
           console.error(
             `Error loading submissions for ${topicId} / ${a.data.title}:`,
@@ -535,7 +657,9 @@ export const fetchAIGradedAssignmentsForTopic = async (
         }
       })
     );
-    enriched.push(...results.filter((r): r is AIGradedAssignmentItem => r !== null));
+    for (const r of results) {
+      if (r !== null) enriched.push(r);
+    }
   }
 
   enriched.sort((a, b) => {
@@ -546,6 +670,37 @@ export const fetchAIGradedAssignmentsForTopic = async (
 
   return enriched;
 };
+
+const AI_GRADED_TOPICS_FETCH_CONCURRENCY = 4;
+
+export type AIGradedAssignmentsDashboardPayload = {
+  items: AIGradedAssignmentItem[];
+  topics: { [key: string]: { course: any; name?: string } };
+};
+
+/** Loads AI-graded assignment rows for every topic (merged, deadline-sorted). Includes awaiting / in process / completed. */
+export const fetchAllAIGradedAssignmentsAcrossTopics =
+  async (): Promise<AIGradedAssignmentsDashboardPayload> => {
+    const topics = await fetchTopics();
+    const topicIds = Object.keys(topics);
+    const merged: AIGradedAssignmentItem[] = [];
+
+    for (let i = 0; i < topicIds.length; i += AI_GRADED_TOPICS_FETCH_CONCURRENCY) {
+      const slice = topicIds.slice(i, i + AI_GRADED_TOPICS_FETCH_CONCURRENCY);
+      const part = await Promise.all(
+        slice.map((topicId) => fetchAIGradedAssignmentsForTopic(topicId, topics[topicId]))
+      );
+      merged.push(...part.flat());
+    }
+
+    merged.sort((a, b) => {
+      const da = a.assignment.data.deadline ? new Date(a.assignment.data.deadline).getTime() : 0;
+      const db = b.assignment.data.deadline ? new Date(b.assignment.data.deadline).getTime() : 0;
+      return db - da;
+    });
+
+    return { items: merged, topics };
+  };
 
 // Fetch classes from Firestore
 export const fetchClassesFromFirestore = async (

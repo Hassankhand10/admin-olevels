@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ComponentType } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Bot,
@@ -17,12 +17,14 @@ import {
   ExternalLink,
   AlertTriangle,
   TrendingUp,
+  Timer,
+  AlertCircle,
+  ClipboardCheck,
 } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 import OLevelsLogo from '../assets/OLevels-logo-color.png';
 import {
-  fetchAIGradedAssignmentsForTopic,
-  fetchTopics,
+  fetchAllAIGradedAssignmentsAcrossTopics,
   isPastPaperPracticeCategory,
   AIGradedAssignmentItem,
   AIGradingStatus,
@@ -41,7 +43,7 @@ const STATUS_META: Record<
   {
     label: string;
     short: string;
-    icon: typeof CheckCircle2;
+    icon: ComponentType<{ className?: string }>;
     badge: string;
     chip: string;
     accent: string;
@@ -51,17 +53,41 @@ const STATUS_META: Record<
     progress: string;
   }
 > = {
-  completed: {
-    label: 'Completed',
-    short: 'Completed',
-    icon: CheckCircle2,
-    badge: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-    chip: 'bg-emerald-500',
-    accent: 'text-emerald-700',
-    cardBorder: 'border-emerald-200 hover:border-emerald-400',
-    cardBg: 'from-emerald-50 to-white',
-    iconBg: 'from-emerald-500 to-emerald-600',
-    progress: 'bg-emerald-500',
+  awaiting: {
+    label: 'Awaiting',
+    short: 'Awaiting',
+    icon: Clock,
+    badge: 'bg-slate-100 text-slate-800 border-slate-200',
+    chip: 'bg-slate-400',
+    accent: 'text-slate-700',
+    cardBorder: 'border-slate-200 hover:border-slate-400',
+    cardBg: 'from-slate-50 to-white',
+    iconBg: 'from-slate-500 to-slate-600',
+    progress: 'bg-slate-400',
+  },
+  pending_evaluation: {
+    label: 'AI assignment created — evaluation incomplete',
+    short: 'Pending eval',
+    icon: AlertCircle,
+    badge: 'bg-orange-100 text-orange-900 border-orange-200',
+    chip: 'bg-orange-500',
+    accent: 'text-orange-800',
+    cardBorder: 'border-orange-200 hover:border-orange-400',
+    cardBg: 'from-orange-50 to-white',
+    iconBg: 'from-orange-500 to-amber-600',
+    progress: 'bg-orange-500',
+  },
+  ready_for_evaluation: {
+    label: 'Ready for evaluation',
+    short: 'Ready',
+    icon: ClipboardCheck,
+    badge: 'bg-cyan-100 text-cyan-900 border-cyan-200',
+    chip: 'bg-cyan-500',
+    accent: 'text-cyan-800',
+    cardBorder: 'border-cyan-200 hover:border-cyan-400',
+    cardBg: 'from-cyan-50 to-white',
+    iconBg: 'from-cyan-500 to-teal-600',
+    progress: 'bg-cyan-500',
   },
   in_process: {
     label: 'AI Grading In Process',
@@ -75,17 +101,17 @@ const STATUS_META: Record<
     iconBg: 'from-indigo-500 to-indigo-600',
     progress: 'bg-indigo-500',
   },
-  awaiting: {
-    label: 'Awaiting AI Grading',
-    short: 'Awaiting',
-    icon: Clock,
-    badge: 'bg-amber-100 text-amber-900 border-amber-200',
-    chip: 'bg-amber-500',
-    accent: 'text-amber-800',
-    cardBorder: 'border-amber-200 hover:border-amber-400',
-    cardBg: 'from-amber-50 to-white',
-    iconBg: 'from-amber-500 to-orange-500',
-    progress: 'bg-amber-500',
+  completed: {
+    label: 'Completed',
+    short: 'Completed',
+    icon: CheckCircle2,
+    badge: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+    chip: 'bg-emerald-500',
+    accent: 'text-emerald-700',
+    cardBorder: 'border-emerald-200 hover:border-emerald-400',
+    cardBg: 'from-emerald-50 to-white',
+    iconBg: 'from-emerald-500 to-emerald-600',
+    progress: 'bg-emerald-500',
   },
 };
 
@@ -110,64 +136,69 @@ const daysSince = (value?: string): number | null => {
   return Math.floor(diff / (1000 * 60 * 60 * 24));
 };
 
+const formatDateCompact = (value?: string) => {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (isNaN(date.getTime())) return '—';
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+};
+
+const formatCreationDate = (ms?: number) => {
+  if (ms == null || typeof ms !== 'number') return null;
+  const date = new Date(ms);
+  if (isNaN(date.getTime())) return null;
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+};
+
+const categoryDisplayLabel = (category: string | undefined) => {
+  if (!category) return '—';
+  if (isPastPaperPracticeCategory(category)) return 'Past paper practice';
+  if (category === 'WeeklyTest' || category === 'WeeklyTest preparation') return 'Weekly test';
+  return category;
+};
+
 export const AIGradedAssignments = () => {
   const navigate = useNavigate();
 
   const [allTopics, setAllTopics] = useState<TopicMetaMap>({});
-  const [loadingTopics, setLoadingTopics] = useState(false);
-
-  const [selectedTopic, setSelectedTopic] = useState<string>('');
-
-  const [items, setItems] = useState<AIGradedAssignmentItem[]>([]);
+  const [allItems, setAllItems] = useState<AIGradedAssignmentItem[]>([]);
   const [loadingItems, setLoadingItems] = useState(false);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+
+  const [topicFilter, setTopicFilter] = useState<string>('');
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('all');
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    void loadTopicsMeta();
+    void loadDashboard();
   }, []);
 
-  useEffect(() => {
-    if (selectedTopic) {
-      void loadAssignmentsForTopic(selectedTopic);
-    } else {
-      setItems([]);
-      setHasLoadedOnce(false);
-    }
-  }, [selectedTopic]);
-
-  const loadTopicsMeta = async () => {
-    setLoadingTopics(true);
-    try {
-      const data = await fetchTopics();
-      setAllTopics(data as TopicMetaMap);
-    } catch (error) {
-      console.error('Error loading topics:', error);
-      toast.error('Error loading topics');
-    } finally {
-      setLoadingTopics(false);
-    }
-  };
-
-  const loadAssignmentsForTopic = async (topicId: string) => {
+  const loadDashboard = async () => {
     setLoadingItems(true);
     try {
-      const meta = allTopics[topicId];
-      const data = await fetchAIGradedAssignmentsForTopic(topicId, meta);
-      setItems(data);
+      const { items, topics } = await fetchAllAIGradedAssignmentsAcrossTopics();
+      setAllItems(items);
+      setAllTopics(topics as TopicMetaMap);
       setHasLoadedOnce(true);
-      toast.success(
-        `Loaded ${data.length} AI-graded assignment${data.length === 1 ? '' : 's'} for ${
-          meta?.name || topicId
-        }`
-      );
+      if (items.length > 0) {
+        toast.success(
+          `Loaded ${items.length} AI-graded assignment${items.length === 1 ? '' : 's'}.`
+        );
+      }
     } catch (error) {
-      console.error('Error loading assignments:', error);
+      console.error('Error loading AI graded dashboard:', error);
       toast.error('Failed to load AI graded assignments');
-      setItems([]);
+      setAllItems([]);
       setHasLoadedOnce(true);
     } finally {
       setLoadingItems(false);
@@ -184,22 +215,39 @@ export const AIGradedAssignments = () => {
       .sort((a, b) => a.title.localeCompare(b.title));
   }, [allTopics]);
 
-  const stats = useMemo(() => {
-    const total = items.length;
-    const completed = items.filter((i) => i.status === 'completed').length;
-    const inProcess = items.filter((i) => i.status === 'in_process').length;
-    const awaiting = items.filter((i) => i.status === 'awaiting').length;
+  const itemsForScope = useMemo(() => {
+    if (!topicFilter) return allItems;
+    return allItems.filter((i) => i.topicId === topicFilter);
+  }, [allItems, topicFilter]);
 
-    const submissionsTotal = items.reduce((sum, i) => sum + i.submittedStudents, 0);
-    const gradedTotal = items.reduce((sum, i) => sum + i.gradedStudents, 0);
+  const stats = useMemo(() => {
+    const total = itemsForScope.length;
+    const awaiting = itemsForScope.filter((i) => i.status === 'awaiting').length;
+    const pendingEvaluation = itemsForScope.filter((i) => i.status === 'pending_evaluation').length;
+    const readyForEvaluation = itemsForScope.filter((i) => i.status === 'ready_for_evaluation').length;
+    const inProcess = itemsForScope.filter((i) => i.status === 'in_process').length;
+    const completed = itemsForScope.filter((i) => i.status === 'completed').length;
+
+    const submissionsTotal = itemsForScope.reduce((sum, i) => sum + i.submittedStudents, 0);
+    const gradedTotal = itemsForScope.reduce((sum, i) => sum + i.gradedStudents, 0);
     const completionRate =
       submissionsTotal > 0 ? Math.round((gradedTotal / submissionsTotal) * 100) : 0;
 
-    return { total, completed, inProcess, awaiting, submissionsTotal, gradedTotal, completionRate };
-  }, [items]);
+    return {
+      total,
+      awaiting,
+      pendingEvaluation,
+      readyForEvaluation,
+      inProcess,
+      completed,
+      submissionsTotal,
+      gradedTotal,
+      completionRate,
+    };
+  }, [itemsForScope]);
 
   const filtered = useMemo(() => {
-    return items.filter((item) => {
+    return itemsForScope.filter((item) => {
       if (statusFilter !== 'all' && item.status !== statusFilter) return false;
       if (categoryFilter !== 'all') {
         const cat = item.assignment.data.selectedAssignmentCategory;
@@ -210,12 +258,13 @@ export const AIGradedAssignments = () => {
         const q = search.trim().toLowerCase();
         const matches =
           item.assignment.data.title.toLowerCase().includes(q) ||
-          (item.assignment.data.teacherName ?? '').toLowerCase().includes(q);
+          (item.assignment.data.teacherName ?? '').toLowerCase().includes(q) ||
+          item.topicName.toLowerCase().includes(q);
         if (!matches) return false;
       }
       return true;
     });
-  }, [items, statusFilter, categoryFilter, search]);
+  }, [itemsForScope, statusFilter, categoryFilter, search]);
 
   const handleOpenAssignmentPortal = (item: AIGradedAssignmentItem) => {
     const base = (GRADING_BASE_URL || '').replace(/\/$/, '');
@@ -235,8 +284,8 @@ export const AIGradedAssignments = () => {
   const hasActiveFilters =
     statusFilter !== 'all' || categoryFilter !== 'all' || search.trim() !== '';
 
-  const selectedTopicMeta = selectedTopic ? allTopics[selectedTopic] : null;
-  const selectedTopicName = selectedTopicMeta?.name || selectedTopic;
+  const topicFilterMeta = topicFilter ? allTopics[topicFilter] : null;
+  const topicFilterLabel = topicFilterMeta?.name || topicFilter || 'All topics';
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40">
@@ -263,15 +312,16 @@ export const AIGradedAssignments = () => {
                   AI Graded Assignments
                 </h1>
                 <p className="text-sm text-gray-600 mt-0.5">
-                  Pick a course &amp; topic to load AI-graded weekly tests / past paper practice
+                  Five statuses from <span className="font-mono text-xs">aiAssignmentStatus</span> (pending / active),
+                  submission counts, and <span className="font-mono text-xs">aiGradingStatus</span> (in process).
                 </p>
               </div>
             </div>
             <button
-              onClick={() => selectedTopic && loadAssignmentsForTopic(selectedTopic)}
-              disabled={loadingItems || !selectedTopic}
+              onClick={() => void loadDashboard()}
+              disabled={loadingItems}
               className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg shadow-md text-sm font-semibold transition-all"
-              title={selectedTopic ? 'Refresh current topic' : 'Select a topic first'}
+              title="Reload from all topics"
             >
               <RefreshCw className={`w-4 h-4 ${loadingItems ? 'animate-spin' : ''}`} />
               {loadingItems ? 'Refreshing…' : 'Refresh'}
@@ -281,29 +331,23 @@ export const AIGradedAssignments = () => {
       </header>
 
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        {/* Topic selector */}
+        {/* Topic filter (optional) */}
         <section className="bg-white rounded-2xl shadow-md border border-gray-100 p-6">
           <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4">
             <BookOpen className="w-5 h-5 text-indigo-600" />
-            Select Topic
+            Scope
           </h2>
           <div className="max-w-sm sm:max-w-md">
             <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
-              Topic
+              Topic (optional)
             </label>
             <select
-              value={selectedTopic}
-              onChange={(e) => setSelectedTopic(e.target.value)}
-              disabled={loadingTopics || topicOptions.length === 0}
+              value={topicFilter}
+              onChange={(e) => setTopicFilter(e.target.value)}
+              disabled={loadingItems && !hasLoadedOnce}
               className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-sm bg-white disabled:bg-gray-50"
             >
-              <option value="">
-                {loadingTopics
-                  ? 'Loading topics…'
-                  : topicOptions.length === 0
-                  ? 'No topics available'
-                  : 'Select a topic…'}
-              </option>
+              <option value="">All topics</option>
               {topicOptions.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.title}
@@ -312,56 +356,67 @@ export const AIGradedAssignments = () => {
             </select>
           </div>
 
-          {selectedTopic && (
-            <div className="mt-4 flex items-center gap-2 text-xs text-gray-600">
-              <Layers className="w-4 h-4 text-indigo-500" />
-              <span className="font-medium text-gray-700">Currently viewing:</span>
-              <span className="font-semibold text-indigo-700">{selectedTopicName}</span>
-            </div>
-          )}
+          <div className="mt-4 flex items-center gap-2 text-xs text-gray-600">
+            <Layers className="w-4 h-4 text-indigo-500" />
+            <span className="font-medium text-gray-700">Stats &amp; list scope:</span>
+            <span className="font-semibold text-indigo-700">{topicFilterLabel}</span>
+          </div>
         </section>
 
-        {/* Empty / waiting state */}
-        {!selectedTopic && (
+        {!hasLoadedOnce && loadingItems ? (
           <section className="bg-white rounded-2xl shadow-md border border-gray-100 p-16 text-center">
-            <div className="bg-gradient-to-br from-indigo-100 to-purple-100 w-20 h-20 mx-auto mb-5 rounded-full flex items-center justify-center">
-              <Bot className="w-10 h-10 text-indigo-600" />
-            </div>
-            <h3 className="text-xl font-bold text-gray-800 mb-2">Select a topic to begin</h3>
+            <Loader2 className="w-12 h-12 text-indigo-600 animate-spin mx-auto mb-4" />
+            <h3 className="text-lg font-bold text-gray-800 mb-1">Loading AI graded assignments…</h3>
             <p className="text-sm text-gray-500 max-w-md mx-auto">
-              Choose a course and a topic above to fetch all AI-graded weekly tests and past paper
-              practice assignments whose deadline has passed.
+              Scanning every topic for AI weekly tests and past paper practice (deadline passed).
             </p>
           </section>
-        )}
-
-        {/* Content for selected topic */}
-        {selectedTopic && (
+        ) : (
           <>
-            {/* Stat cards */}
-            <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            {/* Stat cards — five statuses + total */}
+            <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
               <StatCard
-                title="Total Assignments"
+                title="Total"
                 value={stats.total}
-                sub="Deadline passed"
+                sub="AI mode · deadline passed"
                 icon={Bot}
                 gradient="from-indigo-500 to-purple-600"
                 ringColor="ring-indigo-100"
               />
               <StatCard
-                title="Completed"
-                value={stats.completed}
-                sub="All submissions graded"
-                icon={CheckCircle2}
-                gradient="from-emerald-500 to-emerald-600"
-                ringColor="ring-emerald-100"
-                onClick={() => setStatusFilter('completed')}
-                active={statusFilter === 'completed'}
+                title="Awaiting"
+                value={stats.awaiting}
+                sub="No pending/active bucket yet"
+                icon={Clock}
+                gradient="from-slate-500 to-slate-600"
+                ringColor="ring-slate-100"
+                onClick={() => setStatusFilter('awaiting')}
+                active={statusFilter === 'awaiting'}
               />
               <StatCard
-                title="AI Grading In Process"
+                title="Eval incomplete"
+                value={stats.pendingEvaluation}
+                sub="aiAssignmentStatus pending"
+                icon={AlertCircle}
+                gradient="from-orange-500 to-amber-600"
+                ringColor="ring-orange-100"
+                onClick={() => setStatusFilter('pending_evaluation')}
+                active={statusFilter === 'pending_evaluation'}
+              />
+              <StatCard
+                title="Ready for eval"
+                value={stats.readyForEvaluation}
+                sub="Active, not AI-running"
+                icon={ClipboardCheck}
+                gradient="from-cyan-500 to-teal-600"
+                ringColor="ring-cyan-100"
+                onClick={() => setStatusFilter('ready_for_evaluation')}
+                active={statusFilter === 'ready_for_evaluation'}
+              />
+              <StatCard
+                title="AI in process"
                 value={stats.inProcess}
-                sub="Currently being graded"
+                sub="aiGradingStatus run"
                 icon={Loader2}
                 gradient="from-indigo-500 to-blue-600"
                 ringColor="ring-indigo-100"
@@ -370,14 +425,14 @@ export const AIGradedAssignments = () => {
                 active={statusFilter === 'in_process'}
               />
               <StatCard
-                title="Awaiting AI Grading"
-                value={stats.awaiting}
-                sub="Deadline passed, queued"
-                icon={Clock}
-                gradient="from-amber-500 to-orange-500"
-                ringColor="ring-amber-100"
-                onClick={() => setStatusFilter('awaiting')}
-                active={statusFilter === 'awaiting'}
+                title="Completed"
+                value={stats.completed}
+                sub="All submitters graded"
+                icon={CheckCircle2}
+                gradient="from-emerald-500 to-emerald-600"
+                ringColor="ring-emerald-100"
+                onClick={() => setStatusFilter('completed')}
+                active={statusFilter === 'completed'}
               />
             </section>
 
@@ -387,7 +442,7 @@ export const AIGradedAssignments = () => {
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
                     <TrendingUp className="w-5 h-5 text-indigo-600" />
-                    AI Grading Progress · {selectedTopicName}
+                    AI Grading Progress · {topicFilterLabel}
                   </h2>
                   <span className="text-sm text-gray-500">
                     {stats.gradedTotal} / {stats.submissionsTotal} submissions graded
@@ -405,10 +460,12 @@ export const AIGradedAssignments = () => {
                     {stats.completionRate}%
                   </span>
                 </div>
-                <div className="mt-5 grid grid-cols-3 gap-3 text-xs">
+                <div className="mt-5 flex flex-wrap gap-2 text-xs">
+                  <Legend color="bg-slate-400" label={`${stats.awaiting} Awaiting`} />
+                  <Legend color="bg-orange-500" label={`${stats.pendingEvaluation} Eval incomplete`} />
+                  <Legend color="bg-cyan-500" label={`${stats.readyForEvaluation} Ready`} />
+                  <Legend color="bg-indigo-500" label={`${stats.inProcess} In process`} />
                   <Legend color="bg-emerald-500" label={`${stats.completed} Completed`} />
-                  <Legend color="bg-indigo-500" label={`${stats.inProcess} In Process`} />
-                  <Legend color="bg-amber-500" label={`${stats.awaiting} Awaiting`} />
                 </div>
               </div>
 
@@ -422,10 +479,10 @@ export const AIGradedAssignments = () => {
                     <h2 className="text-lg font-bold">AI Grading Insights</h2>
                   </div>
                   <p className="text-sm text-white/90 leading-relaxed">
-                    Showing all <span className="font-bold">Weekly Test</span> and{' '}
-                    <span className="font-bold">Past Paper Practice</span> assignments in this topic
-                    whose deadline has passed and which use AI grading (
-                    <span className="font-mono">ai</span> or default).
+                    <span className="font-bold">1 Awaiting</span> · <span className="font-bold">2 Pending</span> (
+                    <span className="font-mono">aiAssignmentStatus</span>) · <span className="font-bold">3 Ready</span>{' '}
+                    (active, no run) · <span className="font-bold">4 In process</span> · <span className="font-bold">5 Done</span>.
+                    Values compared lowercase.
                   </p>
                   <div className="mt-4 grid grid-cols-2 gap-3">
                     <Mini label="Submissions" value={stats.submissionsTotal} />
@@ -463,9 +520,11 @@ export const AIGradedAssignments = () => {
                     className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-sm bg-white"
                   >
                     <option value="all">All statuses</option>
-                    <option value="completed">Completed</option>
-                    <option value="in_process">AI Grading In Process</option>
-                    <option value="awaiting">Awaiting AI Grading</option>
+                    <option value="awaiting">1 · Awaiting</option>
+                    <option value="pending_evaluation">2 · AI created — eval incomplete</option>
+                    <option value="ready_for_evaluation">3 · Ready for evaluation</option>
+                    <option value="in_process">4 · AI Grading In Process</option>
+                    <option value="completed">5 · Completed</option>
                   </select>
                 </div>
 
@@ -494,7 +553,7 @@ export const AIGradedAssignments = () => {
                       type="text"
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
-                      placeholder="Title or teacher…"
+                      placeholder="Title, teacher, or topic…"
                       className="w-full pl-9 pr-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-sm bg-white"
                     />
                   </div>
@@ -504,9 +563,9 @@ export const AIGradedAssignments = () => {
               <div className="mt-4 flex items-center justify-between text-sm text-gray-600">
                 <span>
                   Showing <span className="font-bold text-gray-900">{filtered.length}</span> of{' '}
-                  <span className="font-bold text-gray-900">{items.length}</span> assignments
+                  <span className="font-bold text-gray-900">{itemsForScope.length}</span> assignments
                 </span>
-                {filtered.length === 0 && items.length > 0 && (
+                {filtered.length === 0 && itemsForScope.length > 0 && (
                   <span className="text-amber-700 flex items-center gap-1.5">
                     <AlertTriangle className="w-4 h-4" /> No assignments match your filters
                   </span>
@@ -534,27 +593,63 @@ export const AIGradedAssignments = () => {
                   <h3 className="text-lg font-bold text-gray-800 mb-1">
                     {!hasLoadedOnce
                       ? 'No data yet'
-                      : items.length === 0
-                      ? 'No AI graded assignments for this topic'
+                      : itemsForScope.length === 0
+                      ? 'No AI-mode assignments in this scope'
                       : 'No matching assignments'}
                   </h3>
                   <p className="text-sm text-gray-500">
                     {!hasLoadedOnce
                       ? 'Loading…'
-                      : items.length === 0
-                      ? 'No weekly tests or past paper practice with passed deadlines were found.'
+                      : itemsForScope.length === 0
+                      ? 'No eligible weekly tests or past paper practice with passed deadlines.'
                       : 'Try changing or clearing the filters above.'}
                   </p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                  {filtered.map((item) => (
-                    <AssignmentCard
-                      key={`${item.topicId}-${item.assignment.id}`}
-                      item={item}
-                      onOpen={() => handleOpenAssignmentPortal(item)}
-                    />
-                  ))}
+                <div className="space-y-5">
+                  <div className="hidden xl:block bg-white rounded-2xl shadow-md border border-slate-200/80 overflow-hidden ring-1 ring-slate-900/5">
+                    <div className="px-5 py-3.5 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-indigo-50/40">
+                      <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-indigo-600" />
+                        Assignments — click a row to open in the grading portal
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Submission &amp; grading deadlines, marks, and live progress from Realtime DB
+                      </p>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 bg-slate-50/90 border-b border-slate-100">
+                            <th className="px-4 py-3 w-[140px]">Topic</th>
+                            <th className="px-4 py-3 min-w-[220px]">Assignment</th>
+                            <th className="px-4 py-3 whitespace-nowrap">Marks</th>
+                            <th className="px-4 py-3">Status</th>
+                            <th className="px-4 py-3 min-w-[168px]">Progress</th>
+                            <th className="px-4 py-3 min-w-[150px]">Deadlines</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {filtered.map((item) => (
+                            <AssignmentTableRow
+                              key={`${item.topicId}-${item.assignment.id}`}
+                              item={item}
+                              onOpen={() => handleOpenAssignmentPortal(item)}
+                            />
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:hidden gap-5">
+                    {filtered.map((item) => (
+                      <AssignmentCard
+                        key={`${item.topicId}-${item.assignment.id}`}
+                        item={item}
+                        onOpen={() => handleOpenAssignmentPortal(item)}
+                      />
+                    ))}
+                  </div>
                 </div>
               )}
             </section>
@@ -579,7 +674,7 @@ const StatCard = ({
   title: string;
   value: number;
   sub: string;
-  icon: typeof CheckCircle2;
+  icon: ComponentType<{ className?: string }>;
   gradient: string;
   ringColor: string;
   spinIcon?: boolean;
@@ -626,6 +721,132 @@ const Mini = ({ label, value }: { label: string; value: number }) => (
   </div>
 );
 
+const AssignmentTableRow = ({
+  item,
+  onOpen,
+}: {
+  item: AIGradedAssignmentItem;
+  onOpen: () => void;
+}) => {
+  const meta = STATUS_META[item.status];
+  const Icon = meta.icon;
+  const submitted = item.submittedStudents;
+  const graded = item.gradedStudents;
+  const total = item.totalStudents;
+  const gradingProgress = submitted > 0 ? Math.round((graded / submitted) * 100) : 0;
+  const submissionProgress = total > 0 ? Math.round((submitted / total) * 100) : 0;
+  const data = item.assignment.data;
+  const cat = data.selectedAssignmentCategory;
+  const isPastPaper = isPastPaperPracticeCategory(cat);
+
+  return (
+    <tr
+      onClick={onOpen}
+      className="group border-b border-slate-100 last:border-0 hover:bg-indigo-50/40 cursor-pointer transition-colors text-slate-800"
+    >
+      <td className="px-4 py-3.5 align-top">
+        <span
+          className="text-xs font-semibold text-indigo-800 leading-snug line-clamp-3"
+          title={item.topicName}
+        >
+          {item.topicName}
+        </span>
+      </td>
+      <td className="px-4 py-3.5 align-top">
+        <div className="flex flex-wrap items-center gap-1.5 mb-1">
+          <span
+            className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${
+              isPastPaper
+                ? 'bg-purple-100 text-purple-800'
+                : 'bg-sky-100 text-sky-800'
+            }`}
+          >
+            {categoryDisplayLabel(cat)}
+          </span>
+          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-indigo-100 text-indigo-800">
+            <Bot className="w-2.5 h-2.5" />
+            AI
+          </span>
+        </div>
+        <p className="font-semibold text-slate-900 leading-snug">{data.title || 'Untitled'}</p>
+        {data.teacherName ? (
+          <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1">
+            <Users className="w-3 h-3 shrink-0" />
+            {data.teacherName}
+          </p>
+        ) : null}
+        {formatCreationDate(data.creationDate) ? (
+          <p className="text-[11px] text-slate-400 mt-1">Created {formatCreationDate(data.creationDate)}</p>
+        ) : null}
+      </td>
+      <td className="px-4 py-3.5 align-top tabular-nums text-xs text-slate-700">
+        <div className="font-semibold text-slate-900">{data.totalMarks?.trim() ? `${data.totalMarks} marks` : '—'}</div>
+      </td>
+      <td className="px-4 py-3.5 align-top max-w-[240px]">
+        <span
+          title={meta.label}
+          className={`inline-flex items-start gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-semibold leading-snug ${meta.badge}`}
+        >
+          <Icon className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${item.status === 'in_process' ? 'animate-spin' : ''}`} />
+          <span className="line-clamp-3">{meta.label}</span>
+        </span>
+      </td>
+      <td className="px-4 py-3.5 align-top space-y-2.5 text-xs">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Submitted</p>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="tabular-nums text-sm font-semibold text-slate-900" title="Students who submitted / total enrolled">
+              {submitted}/{total}
+            </span>
+            <div
+              className="h-1.5 w-12 shrink-0 rounded-full bg-slate-200 overflow-hidden"
+              title={`${submissionProgress}% of enrolled students have submitted`}
+            >
+              <div className="h-full rounded-full bg-sky-500" style={{ width: `${submissionProgress}%` }} />
+            </div>
+            <span className="text-[11px] text-slate-500 tabular-nums">{submissionProgress}%</span>
+          </div>
+          <p className="text-[10px] text-slate-400 mt-0.5">out of {total} enrolled</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Graded</p>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className={`tabular-nums text-sm font-semibold ${meta.accent}`} title="Graded papers / students who submitted">
+              {graded}/{submitted}
+            </span>
+            <div
+              className="h-1.5 w-12 shrink-0 rounded-full bg-slate-200 overflow-hidden"
+              title={
+                submitted > 0
+                  ? `${gradingProgress}% of submissions have a grade`
+                  : 'No submissions yet'
+              }
+            >
+              <div className={`h-full ${meta.progress} rounded-full`} style={{ width: `${gradingProgress}%` }} />
+            </div>
+            <span className="text-[11px] text-slate-500 tabular-nums">{submitted > 0 ? `${gradingProgress}%` : '—'}</span>
+          </div>
+          <p className="text-[10px] text-slate-400 mt-0.5">among submitted</p>
+        </div>
+      </td>
+      <td className="px-4 py-3.5 align-top text-xs text-slate-600 space-y-1.5">
+        <div title={formatDate(data.deadline)}>
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 block">
+            Submit by
+          </span>
+          {formatDateCompact(data.deadline)}
+        </div>
+        <div title={data.gradingDeadline ? formatDate(data.gradingDeadline) : undefined}>
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 block">
+            Grade by
+          </span>
+          {formatDateCompact(data.gradingDeadline)}
+        </div>
+      </td>
+    </tr>
+  );
+};
+
 const AssignmentCard = ({
   item,
   onOpen,
@@ -637,43 +858,47 @@ const AssignmentCard = ({
   const Icon = meta.icon;
   const submitted = item.submittedStudents;
   const graded = item.gradedStudents;
-  const progress = submitted > 0 ? Math.round((graded / submitted) * 100) : 0;
-  const dSince = daysSince(item.assignment.data.deadline);
-  const category = item.assignment.data.selectedAssignmentCategory;
+  const total = item.totalStudents;
+  const gradingProgress = submitted > 0 ? Math.round((graded / submitted) * 100) : 0;
+  const submissionProgress = total > 0 ? Math.round((submitted / total) * 100) : 0;
+  const data = item.assignment.data;
+  const dSince = daysSince(data.deadline);
+  const category = data.selectedAssignmentCategory;
   const isPastPaper = isPastPaperPracticeCategory(category);
-  const categoryLabel = isPastPaper ? 'Past Paper Practice' : 'Weekly Test';
-  const isAi = item.assignment.data.weeklyTestGradingMode === 'ai';
+  const categoryLabel = categoryDisplayLabel(category);
+  const createdLabel = formatCreationDate(data.creationDate);
 
   return (
-    <div
-      className={`relative rounded-xl border bg-gradient-to-br ${meta.cardBg} ${meta.cardBorder} p-5 shadow-sm hover:shadow-lg transition-all duration-200`}
+    <button
+      type="button"
+      onClick={onOpen}
+      className={`relative w-full text-left rounded-2xl border bg-gradient-to-br ${meta.cardBg} ${meta.cardBorder} p-5 shadow-sm hover:shadow-md ring-1 ring-slate-900/5 transition-all duration-200`}
     >
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="flex-1 min-w-0">
+          <p className="text-[11px] font-semibold text-indigo-800 uppercase tracking-wide mb-1 line-clamp-2">
+            {item.topicName}
+          </p>
           <div className="flex items-center gap-2 mb-1.5 flex-wrap">
             <span
               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border ${
                 isPastPaper
                   ? 'bg-purple-100 text-purple-800 border-purple-200'
-                  : 'bg-blue-100 text-blue-800 border-blue-200'
+                  : 'bg-sky-100 text-sky-800 border-sky-200'
               }`}
             >
               {categoryLabel}
             </span>
             <span
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border ${
-                isAi
-                  ? 'bg-indigo-100 text-indigo-800 border-indigo-200'
-                  : 'bg-gray-100 text-gray-700 border-gray-200'
-              }`}
-              title={isAi ? 'Explicit AI grading' : 'Default (treated as AI)'}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border bg-indigo-100 text-indigo-800 border-indigo-200"
+              title="weeklyTestGradingMode: ai"
             >
               <Bot className="w-3 h-3" />
-              {isAi ? 'AI' : 'AI · default'}
+              AI
             </span>
           </div>
-          <h4 className="font-bold text-gray-900 text-base leading-snug line-clamp-2">
-            {item.assignment.data.title || 'Untitled Assignment'}
+          <h4 className="font-bold text-slate-900 text-base leading-snug line-clamp-2">
+            {data.title || 'Untitled Assignment'}
           </h4>
         </div>
         <div
@@ -691,60 +916,79 @@ const AssignmentCard = ({
         {meta.label}
       </span>
 
-      <div className="space-y-1.5 text-xs text-gray-700 mb-4">
-        <Row icon={Calendar} text={`Deadline: ${formatDate(item.assignment.data.deadline)}`} />
+      <div className="grid grid-cols-2 gap-2 mb-3 rounded-xl bg-white/60 border border-slate-200/80 p-3 text-xs">
+        <div title={formatDate(data.deadline)}>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-0.5">
+            Submit by
+          </p>
+          <p className="font-medium text-slate-800 leading-tight">{formatDateCompact(data.deadline)}</p>
+        </div>
+        <div title={formatDate(data.gradingDeadline)}>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-0.5 flex items-center gap-1">
+            <Timer className="w-3 h-3 shrink-0" />
+            Grade by
+          </p>
+          <p className="font-medium text-slate-800 leading-tight">{formatDateCompact(data.gradingDeadline)}</p>
+        </div>
+      </div>
+
+      <div className="space-y-1.5 text-xs text-slate-700 mb-4">
         {dSince != null && (
           <Row
             icon={Clock}
             text={`${
               dSince === 0
-                ? 'Deadline passed today'
-                : `${dSince} day${dSince === 1 ? '' : 's'} since deadline`
+                ? 'Submission deadline was today'
+                : `${dSince} day${dSince === 1 ? '' : 's'} since submission deadline`
             }`}
             tone={dSince > 7 ? 'warn' : 'muted'}
           />
         )}
-        {item.assignment.data.teacherName && (
-          <Row icon={Users} text={`Teacher: ${item.assignment.data.teacherName}`} />
-        )}
-        <Row
-          icon={Award}
-          text={`${item.assignment.data.totalMarks || '—'} marks • Weight ${
-            item.assignment.data.weightage ?? 0
-          }`}
-        />
+        {data.teacherName && <Row icon={Users} text={`Teacher: ${data.teacherName}`} />}
+        <Row icon={Award} text={data.totalMarks?.trim() ? `${data.totalMarks} marks` : 'Marks —'} />
+        {createdLabel ? (
+          <Row icon={Calendar} text={`Created ${createdLabel}`} />
+        ) : null}
       </div>
 
-      <div className="rounded-lg bg-white/70 backdrop-blur-sm border border-gray-200 p-3 mb-3">
-        <div className="flex items-center justify-between text-xs font-semibold text-gray-700 mb-1.5">
-          <span>Grading progress</span>
-          <span className={meta.accent}>
-            {graded}/{submitted || 0} ({progress}%)
-          </span>
+      <div className="rounded-xl bg-white/70 backdrop-blur-sm border border-slate-200/90 p-3 mb-3 space-y-3">
+        <div>
+          <div className="flex items-center justify-between text-xs font-semibold text-slate-700 mb-1">
+            <span>Submitted</span>
+            <span className="tabular-nums text-slate-900">
+              {submitted}/{total}
+            </span>
+          </div>
+          <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+            <div className="h-full bg-sky-500 rounded-full transition-all" style={{ width: `${submissionProgress}%` }} />
+          </div>
+          <p className="text-[11px] text-slate-500 mt-1">{submissionProgress}% of enrolled • {Math.max(total - submitted, 0)} not submitted</p>
         </div>
-        <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
-          <div
-            className={`h-full ${meta.progress} transition-all duration-500`}
-            style={{ width: `${progress}%` }}
-          />
-        </div>
-        <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500">
-          <span>{item.totalStudents} enrolled</span>
-          <span>
-            {submitted} submitted • {Math.max(item.totalStudents - submitted, 0)} pending submission
-          </span>
+        <div>
+          <div className="flex items-center justify-between text-xs font-semibold text-slate-700 mb-1">
+            <span>Graded (of submitters)</span>
+            <span className={`tabular-nums ${meta.accent}`}>
+              {graded}/{submitted}
+              {submitted > 0 ? ` (${gradingProgress}%)` : ''}
+            </span>
+          </div>
+          <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+            <div
+              className={`h-full ${meta.progress} rounded-full transition-all duration-500`}
+              style={{ width: `${gradingProgress}%` }}
+            />
+          </div>
+          <p className="text-[11px] text-slate-500 mt-1">
+            {submitted > 0 ? 'Share of submitted papers that have a grade' : 'No submissions yet'}
+          </p>
         </div>
       </div>
 
-      <button
-        type="button"
-        onClick={onOpen}
-        className="w-full inline-flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white text-xs font-semibold px-3 py-2.5 rounded-lg shadow-sm hover:shadow-md transition-all"
-      >
-        Open Assignment Portal
+      <div className="w-full inline-flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-xs font-semibold px-3 py-2.5 rounded-xl shadow-sm pointer-events-none">
+        Open in grading portal
         <ExternalLink className="w-3.5 h-3.5" />
-      </button>
-    </div>
+      </div>
+    </button>
   );
 };
 
@@ -758,8 +1002,8 @@ const Row = ({
   tone?: 'muted' | 'warn';
 }) => (
   <div className="flex items-center gap-2">
-    <Icon className={`w-3.5 h-3.5 ${tone === 'warn' ? 'text-amber-600' : 'text-gray-500'}`} />
-    <span className={tone === 'warn' ? 'text-amber-800 font-semibold' : 'text-gray-700'}>{text}</span>
+    <Icon className={`w-3.5 h-3.5 shrink-0 ${tone === 'warn' ? 'text-amber-600' : 'text-slate-500'}`} />
+    <span className={tone === 'warn' ? 'text-amber-800 font-semibold' : 'text-slate-700'}>{text}</span>
   </div>
 );
 
