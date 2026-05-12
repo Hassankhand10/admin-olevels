@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FileText, BarChart, Sparkles } from 'lucide-react';
+import { FileText, BarChart, Sparkles, Database } from 'lucide-react';
 import OLevelsLogo from '../assets/OLevels-logo-color.png';
 
 interface CardData {
@@ -38,6 +38,14 @@ export const HomePage = () => {
       icon: Sparkles,
       description: 'Track AI grading status for weekly tests & past papers',
       onClick: () => navigate('/dashboard/ai-graded-assignments'),
+      isMain: true
+    },
+    {
+      id: 'realtime-db-size',
+      title: 'REALTIME DB SIZE',
+      icon: Database,
+      description: 'Expandable tree: subtree sizes; optional one-click exact total',
+      onClick: () => navigate('/dashboard/realtime-db-size'),
       isMain: true
     },
   ];

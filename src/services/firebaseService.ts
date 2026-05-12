@@ -486,6 +486,39 @@ export function pickAiAssignmentStatus(data: Assignment): string | undefined {
   );
 }
 
+/**
+ * Reads `aiAssignmentId` from RTDB-shaped assignment objects (camelCase or snake_case).
+ * Values are often numeric in RTDB (e.g. `6858`); returned as a trimmed string for comparisons.
+ */
+export function pickAiAssignmentId(data: Assignment): string | undefined {
+  const r = data as unknown as Record<string, unknown>;
+  const pick = (v: unknown): string | undefined => {
+    if (v == null) return undefined;
+    if (typeof v === 'string') {
+      const t = v.trim();
+      return t === '' ? undefined : t;
+    }
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      return String(v);
+    }
+    return undefined;
+  };
+  return pick(data.aiAssignmentId) ?? pick(r.ai_assignment_id) ?? pick(r.aiAssignment_id);
+}
+
+/**
+ * When true, the AI-graded dashboard maps the row to `pending_evaluation` (“AI assignment created — evaluation incomplete”):
+ * {@link pickAiAssignmentStatus} normalizes to `pending` and {@link pickAiAssignmentId} is present (numeric or string id).
+ * Higher-priority outcomes still apply first: all submitters graded → `completed`; {@link isAiGradingStatusInProcess} → `in_process`.
+ */
+export function isPendingAiEvaluationIncomplete(data: Assignment): boolean {
+  const id = pickAiAssignmentId(data);
+  return (
+    normalizeAiStatusToken(pickAiAssignmentStatus(data)) === 'pending' &&
+    Boolean(id)
+  );
+}
+
 /** `PENDING` / `pending` / etc. from {@link pickAiAssignmentStatus}. */
 export function isAiAssignmentStatusPending(data: Assignment): boolean {
   return normalizeAiStatusToken(pickAiAssignmentStatus(data)) === 'pending';
@@ -583,13 +616,7 @@ export function isAIGradedEligible(data: Assignment, now: Date = new Date()): bo
   return true;
 }
 
-/**
- * AI-graded dashboard rows for one topic. Assignment metadata and student submission counts
- * both come from **Realtime Database only** (no Firestore `Archived-*` merge).
- *
- * Status (order): {@link isAiGradingStatusInProcess} → `in_process`; then all submitters graded → `completed`;
- * then {@link isAiAssignmentStatusPending} → `pending_evaluation`; then {@link isAiAssignmentStatusActive} → `ready_for_evaluation`; else `awaiting`.
- */
+
 export const fetchAIGradedAssignmentsForTopic = async (
   topicId: string,
   topicMeta?: { course?: { id?: string | number; name?: string } | null; name?: string }
@@ -624,11 +651,11 @@ export const fetchAIGradedAssignmentsForTopic = async (
           const assignmentNorm = normalizeAiStatusToken(pickAiAssignmentStatus(a.data));
 
           let status: AIGradingStatus;
-          if (isAiGradingStatusInProcess(a.data.aiGradingStatus)) {
-            status = 'in_process';
-          } else if (submittedStudents > 0 && gradedStudents === submittedStudents) {
+          if (submittedStudents > 0 && gradedStudents === submittedStudents) {
             status = 'completed';
-          } else if (assignmentNorm === 'pending') {
+          } else if (isAiGradingStatusInProcess(a.data.aiGradingStatus)) {
+            status = 'in_process';
+          } else if (isPendingAiEvaluationIncomplete(a.data)) {
             status = 'pending_evaluation';
           } else if (assignmentNorm === 'active') {
             status = 'ready_for_evaluation';

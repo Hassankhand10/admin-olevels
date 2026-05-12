@@ -13,6 +13,8 @@ export interface Assignment {
   aiGradingStatus?: string;
   /** Assignment-level AI queue state, e.g. `PENDING` — compared case-insensitively in admin dashboard logic. */
   aiAssignmentStatus?: string;
+  /** External AI assignment record id when linked (RTDB may store a number, e.g. `6858`). With `pending` status, admin shows “evaluation incomplete”. */
+  aiAssignmentId?: string | number;
 }
 
 export interface StudentSubmission {

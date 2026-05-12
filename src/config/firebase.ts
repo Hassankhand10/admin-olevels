@@ -19,3 +19,6 @@ export const auth = getAuth(app);
 export const database = getDatabase(app);
 export const firestore = getFirestore(app);
 
+/** Used for Realtime DB REST shallow reads (same URL as the JS SDK). */
+export const firebaseDatabaseURL = firebaseConfig.databaseURL as string | undefined;
+

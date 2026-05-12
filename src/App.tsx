@@ -3,6 +3,7 @@ import { HomePage } from './components/HomePage';
 import { Dashboard } from './components/Dashboard';
 import { StudentPerformanceReport } from './components/StudentPerformanceReport';
 import { AIGradedAssignments } from './components/AIGradedAssignments';
+import { RealtimeDbSizePage } from './components/RealtimeDbSizePage';
 import { useAuthGuard } from './utils/authGuard';
 
 // Protected Route Component
@@ -61,6 +62,11 @@ function App() {
         <Route path="/dashboard/ai-graded-assignments" element={
           <ProtectedRoute>
             <AIGradedAssignments />
+          </ProtectedRoute>
+        } />
+        <Route path="/dashboard/realtime-db-size" element={
+          <ProtectedRoute>
+            <RealtimeDbSizePage />
           </ProtectedRoute>
         } />
         <Route path="/home" element={<Navigate to="/dashboard" replace />} />
