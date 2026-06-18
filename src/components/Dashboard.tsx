@@ -3,7 +3,7 @@ import { BookOpen, FileText, Users, CheckCircle } from 'lucide-react';
 import OLevelsLogo from '../assets/OLevels-logo-color.png';
 import {
   fetchAssignments,
-  fetchWeeklyTestsFromRealtimeOnly,
+  fetchWeeklyTestsFromFirestore,
   fetchWeeklyTestStudentSubmissions,
   fetchStudentSubmissions,
   fetchTopics,
@@ -125,7 +125,7 @@ export const Dashboard = () => {
   // Teacher search state
   const [teacherSearchTerm, setTeacherSearchTerm] = useState('');
   
-  // Date filter — defaults match weekly-test lookback (same window as RTDB + Firestore)
+  // Date filter — defaults match weekly-test lookback (Firestore live + archive)
   const [teacherReportDateFilter, setTeacherReportDateFilter] = useState<{
     startDate: string;
     endDate: string;
@@ -173,7 +173,7 @@ export const Dashboard = () => {
   const loadCourses = async () => {
     setLoadingCourses(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/admin/getAllCourses`);
+      const response = await fetch(`${API_BASE_URL}/apiGen2/admin/getAllCourses`);
       const data = await response.json();
       
       if (data.success) {
@@ -382,10 +382,10 @@ export const Dashboard = () => {
         teacherReportDateFilter.endDate
       );
 
-      // Pending / unmarked: Realtime weekly tests only (same date window as main list)
+      // Pending / unmarked: Firestore weekly tests (same date window as main list)
       const assignmentPromises = Object.keys(topicsData).map(async (topicId) => {
         try {
-          const assignments = await fetchWeeklyTestsFromRealtimeOnly(topicId, dateWindow);
+          const assignments = await fetchWeeklyTestsFromFirestore(topicId, dateWindow);
           allAssignmentsData[topicId] = assignments;
         } catch (error) {
           console.error(`Error loading assignments for topic ${topicId}:`, error);
@@ -700,7 +700,7 @@ export const Dashboard = () => {
     };
   };
 
-  /** Topics + weekly assignments (RTDB then Firestore) + one student fetch per assignment — reused by teacher report without double-fetch. */
+  /** Topics + weekly assignments (Firestore + archive) + one student fetch per assignment. */
   const loadAllAssignmentsForTeacherReport = async () => {
     try {
       const dateWindow = parseDashboardDateFilterToWindow(
@@ -759,7 +759,7 @@ export const Dashboard = () => {
     }
   };
 
-  // Load teacher grading report (single pass over pre-fetched studentData — no duplicate RTDB/Firestore reads)
+  // Load teacher grading report (single pass over pre-fetched studentData — no duplicate Firestore reads)
   const loadTeacherGradingReport = async () => {
     setLoadingTeacherReport(true);
     try {
@@ -1088,10 +1088,10 @@ export const Dashboard = () => {
                     )}
                   </div>
                   
-                  {/* Date Filter — also filters Weekly Tests list, pending/unmarked, RTDB + Firestore fetches */}
+                  {/* Date Filter — also filters Weekly Tests list, pending/unmarked, Firestore fetches */}
                   <p className="text-xs text-gray-500">
                     Default: 1 month (last {WEEKLY_TEST_LOOKBACK_DAYS} days). Changing dates reloads assignments
-                    (Realtime + archive), pending queues, and this report.
+                    (Firestore live + archive), pending queues, and this report.
                   </p>
                   <div className="flex flex-col sm:flex-row gap-4">
                     <div className="flex-1">

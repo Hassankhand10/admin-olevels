@@ -13,7 +13,7 @@ export interface Assignment {
   aiGradingStatus?: string;
   /** Assignment-level AI queue state, e.g. `PENDING` — compared case-insensitively in admin dashboard logic. */
   aiAssignmentStatus?: string;
-  /** External AI assignment record id when linked (RTDB may store a number, e.g. `6858`). With `pending` status, admin shows “evaluation incomplete”. */
+  /** External AI assignment record id when linked. With `pending` status, admin shows “evaluation incomplete”. */
   aiAssignmentId?: string | number;
 }
 
@@ -49,10 +49,12 @@ export interface StudentData {
   [studentName: string]: StudentSubmission;
 }
 
-/** Weekly test row: Realtime DB and/or Firestore Archived-Assignments */
+/** Weekly test row: Firestore Assignments and/or Archived-Assignments */
 export interface WeeklyTestListItem {
   id: string;
   data: Assignment;
-  /** Set when this row was loaded from Firestore `Archived-Assignments` */
+  /** Firestore doc id in `Assignments` (live) or `Archived-Assignments` (archived) */
+  firestoreDocId?: string;
+  /** @deprecated Use {@link firestoreDocId} — archived rows only */
   archivedFirestoreDocId?: string;
 }

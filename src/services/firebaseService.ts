@@ -1,7 +1,33 @@
 import { ref, get, update } from 'firebase/database';
-import { collection, query, where, getDocs, Timestamp, orderBy } from 'firebase/firestore';
+import {
+  collection,
+  query,
+  where,
+  getDocs,
+  getDoc,
+  doc,
+  updateDoc,
+  Timestamp,
+  orderBy,
+} from 'firebase/firestore';
 import { database, firestore } from '../config/firebase';
 import { Assignment, StudentData, WeeklyTestListItem } from '../types';
+
+const ASSIGNMENTS_COL = 'Assignments';
+const ASSIGNMENT_STUDENTS_COL = 'AssignmentStudents';
+
+/** Firestore doc id: `{topic}__{encodeURIComponent(title)}` */
+export function buildAssignmentDocId(topic: string, title: string): string {
+  return `${topic}__${encodeURIComponent(title)}`;
+}
+
+export function encodeStudentNameForFirestore(name: string): string {
+  return name.replace(/\//g, '__SLASH__');
+}
+
+export function decodeStudentNameFromFirestore(encoded: string): string {
+  return encoded.replace(/__SLASH__/g, '/');
+}
 
 export const WEEKLY_TEST_LOOKBACK_DAYS = 30;
 export const WEEKLY_TEST_LOOKBACK_MS = WEEKLY_TEST_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
@@ -20,7 +46,7 @@ export function getTeacherReportDefaultDateRange(): { startDate: string; endDate
   return { startDate: toYmd(start), endDate: toYmd(end) };
 }
 
-/** Inclusive date range for weekly-test queries (Realtime + Firestore). */
+/** Inclusive date range for weekly-test queries (Firestore live + archive). */
 export type AssignmentDateWindow = { from: Date; to: Date };
 
 /** Maps dashboard `<input type="date">` strings to an inclusive [from, to] window (local time). */
@@ -83,10 +109,7 @@ function coerceFirestoreTimestampLike(raw: unknown): Date | null {
   return null;
 }
 
-function archivedFirestoreDocToAssignment(
-  _docId: string,
-  raw: Record<string, unknown>
-): Assignment {
+function firestoreAssignmentDocToAssignment(raw: Record<string, unknown>): Assignment {
   const deadlineD = coerceFirestoreTimestampLike(raw.deadline);
   const gradingD = coerceFirestoreTimestampLike(raw.gradingDeadline);
   let creationDate: number | undefined;
@@ -97,16 +120,85 @@ function archivedFirestoreDocToAssignment(
     creationDate = (cRaw as { toMillis: () => number }).toMillis();
   }
 
-  return {
+  const base: Assignment = {
     title: String(raw.title ?? raw.assignmentTitle ?? ''),
     deadline: deadlineD ? deadlineD.toISOString() : String(raw.deadline ?? ''),
     gradingDeadline: gradingD ? gradingD.toISOString() : String(raw.gradingDeadline ?? ''),
     totalMarks: String(raw.totalMarks ?? ''),
     weightage: Number(raw.weightage ?? 0),
-    selectedAssignmentCategory: String(raw.selectedAssignmentCategory ?? 'WeeklyTest'),
+    selectedAssignmentCategory: String(
+      raw.selectedAssignmentCategory ?? raw.type ?? 'WeeklyTest'
+    ),
     teacherName: String(raw.teacherName ?? ''),
     creationDate,
   };
+
+  const withAliases = { ...raw, ...base } as Assignment;
+  const mode = resolveWeeklyTestGradingMode(withAliases);
+  if (mode) base.weeklyTestGradingMode = mode;
+  const aiStatus = pickAiAssignmentStatus(withAliases);
+  if (aiStatus) base.aiAssignmentStatus = aiStatus;
+  const aiId = pickAiAssignmentId(withAliases);
+  if (aiId) base.aiAssignmentId = aiId;
+  if (typeof raw.aiGradingStatus === 'string' && raw.aiGradingStatus.trim()) {
+    base.aiGradingStatus = raw.aiGradingStatus;
+  }
+
+  return base;
+}
+
+function archivedFirestoreDocToAssignment(
+  _docId: string,
+  raw: Record<string, unknown>
+): Assignment {
+  return firestoreAssignmentDocToAssignment(raw);
+}
+
+function isAssignmentArchived(raw: Record<string, unknown>): boolean {
+  return raw.archived === true;
+}
+
+async function fetchLiveAssignmentsFromFirestore(
+  topic: string
+): Promise<{ id: string; data: Assignment }[]> {
+  const col = collection(firestore, ASSIGNMENTS_COL);
+  const snapshots = await Promise.all([
+    getDocs(query(col, where('topic', '==', topic))),
+    getDocs(query(col, where('topicId', '==', topic))),
+  ]);
+
+  const byId = new Map<string, { id: string; data: Assignment }>();
+  for (const snap of snapshots) {
+    snap.forEach((docSnap) => {
+      const raw = docSnap.data() as Record<string, unknown>;
+      if (isAssignmentArchived(raw)) return;
+      const data = firestoreAssignmentDocToAssignment(raw);
+      byId.set(docSnap.id, { id: docSnap.id, data });
+    });
+  }
+  return Array.from(byId.values());
+}
+
+async function fetchAssignmentStudentsFromFirestore(
+  topic: string,
+  assignmentTitle: string
+): Promise<StudentData> {
+  const assignmentDocId = buildAssignmentDocId(topic, assignmentTitle);
+  const studentsCol = collection(
+    firestore,
+    ASSIGNMENT_STUDENTS_COL,
+    assignmentDocId,
+    'students'
+  );
+  const snapshot = await getDocs(studentsCol);
+  if (snapshot.empty) return {};
+
+  const merged: StudentData = {};
+  snapshot.forEach((docSnap) => {
+    const name = decodeStudentNameFromFirestore(docSnap.id);
+    merged[name] = docSnap.data() as StudentData[string];
+  });
+  return merged;
 }
 
 function getArchivedDocReferenceDate(raw: Record<string, unknown>, data: Assignment): Date | null {
@@ -166,6 +258,7 @@ async function fetchArchivedWeeklyTestDocsForTopic(
       byId.set(docSnap.id, {
         id: docSnap.id,
         data,
+        firestoreDocId: docSnap.id,
         archivedFirestoreDocId: docSnap.id,
       });
     });
@@ -175,10 +268,9 @@ async function fetchArchivedWeeklyTestDocsForTopic(
 }
 
 /**
- * Active weekly tests only (Realtime DB), filtered by the same date window as Firestore archive.
- * Used for pending/unmarked queues where grading must stay on RTDB paths.
+ * Active weekly tests from Firestore `Assignments`, filtered by date window.
  */
-export async function fetchWeeklyTestsFromRealtimeOnly(
+export async function fetchWeeklyTestsFromFirestore(
   topic: string,
   dateWindow?: AssignmentDateWindow
 ): Promise<WeeklyTestListItem[]> {
@@ -186,23 +278,19 @@ export async function fetchWeeklyTestsFromRealtimeOnly(
     from: getWeeklyTestCutoffDate(),
     to: new Date(),
   };
-  const assignmentRef = ref(database, `assignments/topics/${topic}/assignment`);
-  const snapshot = await get(assignmentRef);
-  if (!snapshot.exists()) return [];
-
-  const assignments = snapshot.val() as Record<string, Assignment>;
+  const assignments = await fetchLiveAssignmentsFromFirestore(topic);
   const out: WeeklyTestListItem[] = [];
 
-  for (const [id, data] of Object.entries(assignments)) {
+  for (const { id, data } of assignments) {
     if (data.selectedAssignmentCategory !== 'WeeklyTest') continue;
     if (!isAssignmentInDateWindow(data, range)) continue;
-    out.push({ id, data });
+    out.push({ id, data, firestoreDocId: id });
   }
   return out;
 }
 
 /**
- * Weekly tests for admin UI: Realtime DB first, then Firestore archive (both use the same date window), deduped by title.
+ * Weekly tests for admin UI: Firestore live assignments + archived docs, deduped by title.
  */
 export async function fetchWeeklyTestsForTopic(
   topic: string,
@@ -212,7 +300,7 @@ export async function fetchWeeklyTestsForTopic(
     from: getWeeklyTestCutoffDate(),
     to: new Date(),
   };
-  const live = await fetchWeeklyTestsFromRealtimeOnly(topic, range);
+  const live = await fetchWeeklyTestsFromFirestore(topic, range);
   const archived = await fetchArchivedWeeklyTestDocsForTopic(topic, range);
 
   const seenTitles = new Set<string>();
@@ -271,7 +359,7 @@ export const fetchTopics = async (): Promise<{[key: string]: {course: any, name?
   }
 };
 
-/** Weekly tests only: Realtime DB + Firestore Archived-Assignments, filtered by `dateWindow` (default: last 30 days). */
+/** Weekly tests only: Firestore Assignments + Archived-Assignments, filtered by `dateWindow`. */
 export const fetchAssignments = async (
   topic: string,
   dateWindow?: AssignmentDateWindow
@@ -283,17 +371,12 @@ export const fetchStudentSubmissions = async (
   topic: string,
   assignmentTitle: string
 ): Promise<StudentData> => {
-  const studentsRef = ref(database, `assignmentStudents/${topic}/${assignmentTitle}/students`);
-  const snapshot = await get(studentsRef);
-
-  if (snapshot.exists()) {
-    return snapshot.val() as StudentData;
-  }
-  return {};
+  return fetchAssignmentStudentsFromFirestore(topic, assignmentTitle);
 };
 
 /**
- * Student submissions for a weekly test: RTDB, or merged chunks from Archived-Assignments-Students.
+ * Student submissions: Firestore `AssignmentStudents` for live assignments,
+ * or merged chunks from `Archived-Assignments-Students` when archived.
  */
 export async function fetchWeeklyTestStudentSubmissions(
   topic: string,
@@ -301,7 +384,7 @@ export async function fetchWeeklyTestStudentSubmissions(
   archivedFirestoreDocId?: string
 ): Promise<StudentData> {
   if (!archivedFirestoreDocId) {
-    return fetchStudentSubmissions(topic, assignmentTitle);
+    return fetchAssignmentStudentsFromFirestore(topic, assignmentTitle);
   }
   const col = collection(firestore, 'Archived-Assignments-Students');
   const q = query(col, where('assignmentId', '==', archivedFirestoreDocId));
@@ -335,47 +418,73 @@ export const updateStudentGrade = async (
   marks: number,
   feedback: string
 ): Promise<void> => {
-  const studentRef = ref(
-    database,
-    `assignmentStudents/${topic}/${assignmentTitle}/students/${studentName}`
+  const assignmentDocId = buildAssignmentDocId(topic, assignmentTitle);
+  const studentDocId = encodeStudentNameForFirestore(studentName);
+  const studentRef = doc(
+    firestore,
+    ASSIGNMENT_STUDENTS_COL,
+    assignmentDocId,
+    'students',
+    studentDocId
   );
 
-  await update(studentRef, {
+  await updateDoc(studentRef, {
     graded: true,
     marks,
     feedback,
   });
 };
 
-// Generic update function for any Firebase path
+/** Blocks accidental RTDB reads/writes on migrated assignment paths. */
+function assertNotAssignmentRtdbPath(path: string): void {
+  const normalized = path.replace(/^\/+/, '');
+  if (
+    normalized.startsWith('assignments/') ||
+    normalized.startsWith('assignmentStudents/') ||
+    normalized === 'assignments' ||
+    normalized === 'assignmentStudents'
+  ) {
+    throw new Error(
+      `RTDB path "${path}" is not allowed for assignments — use Firestore Assignments / AssignmentStudents.`
+    );
+  }
+}
+
+// Generic update function for any Firebase Realtime Database path (non-assignment data).
 export const updateFirebaseData = async (
   path: string,
-  data: any
+  data: Record<string, unknown>
 ): Promise<void> => {
+  assertNotAssignmentRtdbPath(path);
   const refPath = ref(database, path);
   await update(refPath, data);
 };
 
-// Specific function for updating supervision approval
 export const updateSupervisionApproval = async (
   topic: string,
   assignmentTitle: string,
   studentName: string,
   approvalValue: string | null
 ): Promise<void> => {
-  const path = `assignmentStudents/${topic}/${assignmentTitle}/students/${studentName}`;
-  
+  const assignmentDocId = buildAssignmentDocId(topic, assignmentTitle);
+  const studentDocId = encodeStudentNameForFirestore(studentName);
+  const studentRef = doc(
+    firestore,
+    ASSIGNMENT_STUDENTS_COL,
+    assignmentDocId,
+    'students',
+    studentDocId
+  );
+
   if (!approvalValue) {
-    // Remove approval
-    await updateFirebaseData(path, {
+    await updateDoc(studentRef, {
       supervisionApproval: null,
-      supervisionApprovalDate: null
+      supervisionApprovalDate: null,
     });
   } else {
-    // Update approval
-    await updateFirebaseData(path, {
+    await updateDoc(studentRef, {
       supervisionApproval: approvalValue,
-      supervisionApprovalDate: new Date().getTime()
+      supervisionApprovalDate: new Date().getTime(),
     });
   }
 };
@@ -410,37 +519,21 @@ export const fetchAllStudents = async (): Promise<Array<{name: string, studentId
 };
 
 /**
- * Assignment definitions for a topic from **Firebase Realtime Database only**
- * (`assignments/topics/{topic}/assignment`). Does not read Firestore or archives.
+ * Assignment definitions for a topic from Firestore `Assignments` (non-archived only).
  */
-export const fetchRealtimeAssignmentsForTopic = async (
+export const fetchAssignmentsFromFirestoreForTopic = async (
   topic: string
 ): Promise<{ id: string; data: Assignment }[]> => {
   try {
-    const assignmentRef = ref(database, `assignments/topics/${topic}/assignment`);
-    const snapshot = await get(assignmentRef);
-
-    if (snapshot.exists()) {
-      const assignments = snapshot.val();
-      return Object.entries(assignments).map(([id, raw]) => {
-        const typed = raw as Assignment;
-        const resolvedMode = resolveWeeklyTestGradingMode(typed);
-        const data: Assignment =
-          resolvedMode !== undefined
-            ? { ...typed, weeklyTestGradingMode: resolvedMode }
-            : typed;
-        return { id, data };
-      });
-    }
-    return [];
+    return await fetchLiveAssignmentsFromFirestore(topic);
   } catch (error) {
-    console.error('Error fetching Realtime assignments:', error);
+    console.error('Error fetching Firestore assignments:', error);
     return [];
   }
 };
 
-/** Same as {@link fetchRealtimeAssignmentsForTopic} (Realtime DB only). */
-export const fetchAllAssignments = fetchRealtimeAssignmentsForTopic;
+/** All assignment types for a topic — Firestore `Assignments` collection. */
+export const fetchAllAssignments = fetchAssignmentsFromFirestoreForTopic;
 
 export const PAST_PAPER_PRACTICE_CATEGORIES = ['PastPaper Practice', 'PastPaperPractice'] as const;
 
@@ -467,7 +560,7 @@ export function normalizeAiStatusToken(raw: unknown): string {
 }
 
 /**
- * Reads `aiAssignmentStatus` from RTDB-shaped assignment objects (camelCase or snake_case).
+ * Reads `aiAssignmentStatus` from assignment objects (camelCase or snake_case aliases).
  */
 export function pickAiAssignmentStatus(data: Assignment): string | undefined {
   const r = data as unknown as Record<string, unknown>;
@@ -487,8 +580,7 @@ export function pickAiAssignmentStatus(data: Assignment): string | undefined {
 }
 
 /**
- * Reads `aiAssignmentId` from RTDB-shaped assignment objects (camelCase or snake_case).
- * Values are often numeric in RTDB (e.g. `6858`); returned as a trimmed string for comparisons.
+ * Reads `aiAssignmentId` from assignment objects (camelCase or snake_case aliases).
  */
 export function pickAiAssignmentId(data: Assignment): string | undefined {
   const r = data as unknown as Record<string, unknown>;
@@ -530,7 +622,7 @@ export function isAiAssignmentStatusActive(data: Assignment): boolean {
 }
 
 /**
- * True only when assignment is actively in AI grading (canonical RTDB value, or same words with different casing/spacing).
+ * True only when assignment is actively in AI grading (canonical value, or same words with different casing/spacing).
  * Comparisons use {@link normalizeAiStatusToken}; any other non-empty value is **not** in-process.
  */
 export function isAiGradingStatusInProcess(raw: unknown): boolean {
@@ -548,7 +640,7 @@ export function isPeerWeeklyTestGradingMode(mode: string | null | undefined): bo
 }
 
 /**
- * Reads grading mode from RTDB-shaped objects (camelCase or snake_case aliases).
+ * Reads grading mode from assignment objects (camelCase or snake_case aliases).
  */
 export function resolveWeeklyTestGradingMode(data: Assignment): string | undefined {
   const r = data as unknown as Record<string, unknown>;
@@ -598,7 +690,7 @@ export interface AIGradedAssignmentItem {
 /**
  * Eligible only when all hold:
  * 1) Category is WeeklyTest or Past Paper Practice (`PastPaper Practice` or legacy `PastPaperPractice`).
- * 2) Grading mode resolves to explicit `"ai"` (see `resolveWeeklyTestGradingMode` for RTDB key aliases).
+ * 2) Grading mode resolves to explicit `"ai"` (see `resolveWeeklyTestGradingMode` for field aliases).
  * 3) Submission deadline has passed (supports ISO string, ms number, Firestore-like `{seconds}` maps).
  */
 export function isAIGradedEligible(data: Assignment, now: Date = new Date()): boolean {
@@ -626,7 +718,7 @@ export const fetchAIGradedAssignmentsForTopic = async (
   const courseId = topicMeta?.course?.id ?? null;
   const courseName = topicMeta?.course?.name ?? null;
 
-  const assignments = await fetchRealtimeAssignmentsForTopic(topicId);
+  const assignments = await fetchAssignmentsFromFirestoreForTopic(topicId);
 
   const eligible = assignments.filter((a) => isAIGradedEligible(a.data, now));
 
@@ -767,33 +859,34 @@ export const fetchClassesFromFirestore = async (
   }
 };
 
-// Fetch assignment student data from assignmentStudents path
-// Tries both studentId and studentName
+// Fetch assignment student data from Firestore AssignmentStudents/students
 export const fetchAssignmentStudentData = async (
   topic: string,
   assignmentTitle: string,
   studentId: string,
   studentName?: string
-): Promise<any> => {
+): Promise<StudentData[string] | null> => {
   try {
-    // First try with studentId
-    let studentRef = ref(database, `assignmentStudents/${topic}/${assignmentTitle}/students/${studentId}`);
-    let snapshot = await get(studentRef);
-    
-    if (snapshot.exists()) {
-      return snapshot.val();
-    }
-    
-    // If not found and studentName is provided, try with studentName
+    const assignmentDocId = buildAssignmentDocId(topic, assignmentTitle);
+    const tryIds = [studentId];
     if (studentName && studentName !== studentId) {
-      studentRef = ref(database, `assignmentStudents/${topic}/${assignmentTitle}/students/${studentName}`);
-      snapshot = await get(studentRef);
-      
+      tryIds.push(studentName);
+    }
+
+    for (const id of tryIds) {
+      const studentRef = doc(
+        firestore,
+        ASSIGNMENT_STUDENTS_COL,
+        assignmentDocId,
+        'students',
+        encodeStudentNameForFirestore(id)
+      );
+      const snapshot = await getDoc(studentRef);
       if (snapshot.exists()) {
-        return snapshot.val();
+        return snapshot.data() as StudentData[string];
       }
     }
-    
+
     return null;
   } catch (error) {
     console.error('Error fetching assignment student data:', error);

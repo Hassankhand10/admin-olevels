@@ -283,7 +283,7 @@ export const StudentPerformanceReport = () => {
           
           const batchPromises = batch.map(async (assignment: { id: string; data: Assignment }) => {
             try {
-              // Check if student exists in assignmentStudents
+              // Check if student exists in Firestore AssignmentStudents
               const studentData = await fetchAssignmentStudentData(
                 topicId,
                 assignment.data.title,
@@ -1457,7 +1457,7 @@ export const StudentPerformanceReport = () => {
                             }
                           }
                           
-                          // Format submission time (from assignmentStudents)
+                          // Format submission time (from Firestore AssignmentStudents)
                           // submissionTime can be already formatted string or timestamp
                           const submissionTime = studentData.submissionTime || studentData.submittedAt || '';
                           let formattedTime = 'N/A';
