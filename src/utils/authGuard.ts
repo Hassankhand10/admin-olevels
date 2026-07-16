@@ -1,5 +1,5 @@
 import React from 'react';
-import { VITE_BASE_URL } from '../config/constants';
+import { getTeacherPortalUrl } from '../config/constants';
 import { database } from '../config/firebase';
 import { ref, get } from 'firebase/database';
 
@@ -31,7 +31,7 @@ const showAdminAccessDeniedPage = () => {
           Redirecting to login page in <span id="countdown">30</span> seconds...
         </p>
         <div style="margin-top: 20px;">
-          <button onclick="window.location.href='${VITE_BASE_URL}/teacher'" 
+          <button onclick="window.location.href='${getTeacherPortalUrl()}/teacher'" 
                   style="
                     background: #1976d2;
                     color: white;
@@ -58,7 +58,7 @@ const showAdminAccessDeniedPage = () => {
     }
     if (countdown <= 0) {
       clearInterval(interval);
-      window.location.href = `${VITE_BASE_URL}/teacher`;
+      window.location.href = `${getTeacherPortalUrl()}/teacher`;
     }
   }, 1000);
 };
@@ -83,7 +83,7 @@ export const checkTeacherCookies = (): TeacherAuth | null => {
     for (let i = 0; i < cookies.length; i++) {
       const cookie = cookies[i].split("=");
       if (cookie[0] === 'teacher') {
-        teacherCookie = cookie[1];
+        teacherCookie = cookie.slice(1).join('=');
         break;
       }
     }
@@ -92,7 +92,7 @@ export const checkTeacherCookies = (): TeacherAuth | null => {
       return null;
     }
     
-    const teacherData: TeacherAuth = JSON.parse(teacherCookie);
+    const teacherData: TeacherAuth = JSON.parse(decodeURIComponent(teacherCookie));
     
     return teacherData;
   } catch (error) {
@@ -178,13 +178,13 @@ export const authGuardAsync = async (): Promise<boolean> => {
   const currentUrl = encodeURIComponent(window.location.href);
   
   if (!teacherData) {
-    window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
+    window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
     return false;
   }
   
   // Not a teacher - redirect to teacher login
   if (!teacherData.isTeacher) {
-    window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
+    window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
     return false;
   }
   
@@ -220,13 +220,13 @@ export const authGuard = (): boolean => {
   const currentUrl = encodeURIComponent(window.location.href);
   
   if (!teacherData) {
-    window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
+    window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
     return false;
   }
   
 
   if (!teacherData.isTeacher) {
-    window.location.href = `${VITE_BASE_URL}/teacher?redirect=${currentUrl}`;
+    window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
     return false;
   }
   
@@ -273,10 +273,10 @@ export const logout = () => {
     
     // Redirect to teacher login with logout message
     const logoutMessage = encodeURIComponent('You have been logged out successfully.');
-    window.open(`${VITE_BASE_URL}/teacher?message=${logoutMessage}`, '_blank');
+    window.open(`${getTeacherPortalUrl()}/teacher?message=${logoutMessage}`, '_blank');
   } catch (error) {
     console.error('Error during logout:', error);
     // Force redirect even if clearing fails
-    window.open(`${VITE_BASE_URL}/teacher`, '_blank');
+    window.open(`${getTeacherPortalUrl()}/teacher`, '_blank');
   }
 };
