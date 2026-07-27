@@ -15,7 +15,7 @@ import {
 } from '../services/firebaseService';
 import { Assignment, StudentData, StudentSubmission, WeeklyTestListItem } from '../types';
 import toast, { Toaster } from 'react-hot-toast';
-import { GRADING_BASE_URL , API_BASE_URL} from '../config/constants';
+import { getTeacherPortalUrl, API_BASE_URL } from '../config/constants';
 
 export const Dashboard = () => {
   const [activeTab] = useState<'weekly-test'>('weekly-test');
@@ -667,7 +667,7 @@ export const Dashboard = () => {
   // Handle start grading redirect
   const handleStartGrading = (topicId: string, assignmentTitle: string) => {
     const topicName = allTopics[topicId]?.name || topicId;
-    const gradingUrl = `${GRADING_BASE_URL}/assignment/${topicName}/teacher/${assignmentTitle}/grading/all`;
+    const gradingUrl = `${getTeacherPortalUrl()}/assignment/${topicName}/teacher/${assignmentTitle}/grading/all`;
     window.open(gradingUrl, '_blank');
   };
 
@@ -1922,7 +1922,7 @@ export const Dashboard = () => {
                                   <button
                                     onClick={() => {
                                       const topicName = allTopics[selectedTopic]?.name || selectedTopic;
-                                      const gradingUrl = `${GRADING_BASE_URL}/assignment/${topicName}/teacher/${selectedAssignment?.title}/grading/${name}`;
+                                      const gradingUrl = `${getTeacherPortalUrl()}/assignment/${topicName}/teacher/${selectedAssignment?.title}/grading/${name}`;
                                       window.open(gradingUrl, '_blank');
                                     }}
                                     disabled={!data.submission || !!selectedAssignment.archivedFirestoreDocId}

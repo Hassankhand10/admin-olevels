@@ -29,7 +29,7 @@ import {
   AIGradedAssignmentItem,
   AIGradingStatus,
 } from '../services/firebaseService';
-import { GRADING_BASE_URL } from '../config/constants';
+import { getTeacherPortalUrl } from '../config/constants';
 
 type StatusFilter = 'all' | AIGradingStatus;
 type CategoryFilter = 'all' | 'WeeklyTest' | 'pastPaper';
@@ -267,7 +267,7 @@ export const AIGradedAssignments = () => {
   }, [itemsForScope, statusFilter, categoryFilter, search]);
 
   const handleOpenAssignmentPortal = (item: AIGradedAssignmentItem) => {
-    const base = (GRADING_BASE_URL || '').replace(/\/$/, '');
+    const base = getTeacherPortalUrl().replace(/\/$/, '');
     const topicKey = item.topicId || item.topicName || '';
     const topicSegment = encodeURIComponent(topicKey);
     const titleSegment = encodeURIComponent(item.assignment.data.title);
