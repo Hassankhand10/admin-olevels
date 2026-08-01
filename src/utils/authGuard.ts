@@ -96,7 +96,6 @@ export const checkTeacherCookies = (): TeacherAuth | null => {
     
     return teacherData;
   } catch (error) {
-    console.error('Error checking teacher cookies:', error);
     return null;
   }
 };
@@ -119,7 +118,6 @@ export const checkAdminStatusFromFirebase = async (username: string): Promise<bo
 
     return false;
   } catch (error) {
-    console.error('Error checking admin status from Firebase:', error);
     return false;
   }
 };
@@ -200,7 +198,6 @@ export const authGuardAsync = async (): Promise<boolean> => {
     // All checks passed - user is authenticated admin
     return true;
   } catch (error) {
-    console.error('Error checking admin status:', error);
     // Fallback to cookie check if Firebase fails
     if (!teacherData.admin) {
       showAdminAccessDeniedPage();
@@ -248,7 +245,6 @@ export const useAuthGuard = () => {
         const authResult = await authGuardAsync();
         setIsAuthenticated(authResult);
       } catch (error) {
-        console.error('Authentication check failed:', error);
         setIsAuthenticated(false);
       } finally {
         setIsLoading(false);
@@ -275,7 +271,6 @@ export const logout = () => {
     const logoutMessage = encodeURIComponent('You have been logged out successfully.');
     window.open(`${getTeacherPortalUrl()}/teacher?message=${logoutMessage}`, '_blank');
   } catch (error) {
-    console.error('Error during logout:', error);
     // Force redirect even if clearing fails
     window.open(`${getTeacherPortalUrl()}/teacher`, '_blank');
   }

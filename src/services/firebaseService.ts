@@ -12,6 +12,29 @@ import {
 } from 'firebase/firestore';
 import { database, firestore } from '../config/firebase';
 import { Assignment, StudentData, WeeklyTestListItem } from '../types';
+import { shallowPeek } from './realtimeDbShallow';
+
+type TopicListEntry = { course: any; name?: string };
+
+/** Topic name keys only via REST shallow — never downloads the fat /topics tree. */
+async function listTopicKeysLight(): Promise<string[]> {
+  const peek = await shallowPeek('topics');
+  if (peek.kind === 'branch') return peek.childKeys;
+  return [];
+}
+
+async function mapInChunks<T, R>(
+  items: T[],
+  chunkSize: number,
+  mapper: (item: T) => Promise<R>
+): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    out.push(...(await Promise.all(chunk.map(mapper))));
+  }
+  return out;
+}
 
 const ASSIGNMENTS_COL = 'Assignments';
 const ASSIGNMENT_STUDENTS_COL = 'AssignmentStudents';
@@ -22,11 +45,11 @@ export function buildAssignmentDocId(topic: string, title: string): string {
 }
 
 export function encodeStudentNameForFirestore(name: string): string {
-  return name.replace(/\//g, '__SLASH__');
+  return String(name ?? '').replace(/\//g, '__SLASH__');
 }
 
 export function decodeStudentNameFromFirestore(encoded: string): string {
-  return encoded.replace(/__SLASH__/g, '/');
+  return String(encoded ?? '').replace(/__SLASH__/g, '/');
 }
 
 export const WEEKLY_TEST_LOOKBACK_DAYS = 30;
@@ -327,34 +350,28 @@ export async function fetchWeeklyTestsForTopic(
   return merged;
 }
 
-export const fetchTopics = async (): Promise<{[key: string]: {course: any, name?: string}}> => {
+/**
+ * Light topic list (keys + course only). Shallow keys + per-topic course reads —
+ * never downloads the full /topics tree.
+ */
+export const fetchTopics = async (): Promise<{[key: string]: TopicListEntry}> => {
   try {
-    const assignmentsRef = ref(database, 'topics');
-    
-    // Get snapshot to access keys and course objects only
-    const snapshot = await get(assignmentsRef);
-
-    if (snapshot.exists()) {
-      const data = snapshot.val();
-      
-      // Extract keys, course objects, and topic names for each topic
-      const topicsWithCourses: {[key: string]: {course: any, name?: string}} = {};
-      
-      Object.keys(data).forEach(topicKey => {
-        const topicData = data[topicKey];
-        topicsWithCourses[topicKey] = {
-          course: topicData.course || null,
-          name: topicData.name || topicKey
-        };
-      });
-      
-      return topicsWithCourses;
-    } else {
-      console.log('No data found at topics path');
+    const keys = await listTopicKeysLight();
+    if (!keys.length) {
       return {};
     }
+
+    const topicsWithCourses: {[key: string]: TopicListEntry} = {};
+    await mapInChunks(keys, 25, async (topicKey) => {
+      const courseSnap = await get(ref(database, `topics/${topicKey}/course`));
+      topicsWithCourses[topicKey] = {
+        course: courseSnap.val() || null,
+        name: topicKey,
+      };
+      return topicKey;
+    });
+    return topicsWithCourses;
   } catch (error) {
-    console.error('Error fetching topics from Firebase:', error);
     return {};
   }
 };
@@ -503,7 +520,7 @@ export const fetchAllStudents = async (): Promise<Array<{name: string, studentId
         const studentData = data[studentName];
         studentsList.push({
           name: studentName,
-          studentId: studentData.studentId || studentData.id || ''
+          studentId: String(studentData.studentId || studentData.id || '')
         });
       });
       
@@ -513,7 +530,6 @@ export const fetchAllStudents = async (): Promise<Array<{name: string, studentId
     }
     return [];
   } catch (error) {
-    console.error('Error fetching students:', error);
     return [];
   }
 };
@@ -527,7 +543,6 @@ export const fetchAssignmentsFromFirestoreForTopic = async (
   try {
     return await fetchLiveAssignmentsFromFirestore(topic);
   } catch (error) {
-    console.error('Error fetching Firestore assignments:', error);
     return [];
   }
 };
@@ -708,7 +723,6 @@ export function isAIGradedEligible(data: Assignment, now: Date = new Date()): bo
   return true;
 }
 
-
 export const fetchAIGradedAssignmentsForTopic = async (
   topicId: string,
   topicMeta?: { course?: { id?: string | number; name?: string } | null; name?: string }
@@ -768,10 +782,6 @@ export const fetchAIGradedAssignmentsForTopic = async (
           };
           return row;
         } catch (error) {
-          console.error(
-            `Error loading submissions for ${topicId} / ${a.data.title}:`,
-            error
-          );
           return null;
         }
       })
@@ -854,7 +864,6 @@ export const fetchClassesFromFirestore = async (
     
     return classes;
   } catch (error) {
-    console.error('Error fetching classes from Firestore:', error);
     return [];
   }
 };
@@ -868,9 +877,9 @@ export const fetchAssignmentStudentData = async (
 ): Promise<StudentData[string] | null> => {
   try {
     const assignmentDocId = buildAssignmentDocId(topic, assignmentTitle);
-    const tryIds = [studentId];
-    if (studentName && studentName !== studentId) {
-      tryIds.push(studentName);
+    const tryIds = [String(studentId ?? '')].filter(Boolean);
+    if (studentName && String(studentName) !== String(studentId)) {
+      tryIds.push(String(studentName));
     }
 
     for (const id of tryIds) {
@@ -889,55 +898,43 @@ export const fetchAssignmentStudentData = async (
 
     return null;
   } catch (error) {
-    console.error('Error fetching assignment student data:', error);
     return null;
   }
 };
 
-// Fetch student's topics by checking topics/{topic}/students/{studentName}
-// Optimized: Fetch all topics first, then check in parallel
+/**
+ * Topics a student is enrolled in. Shallow topic keys + per-path exists checks
+ * (never full /topics download; no topicMeta/studentTopics indexes).
+ */
 export const fetchStudentTopics = async (studentName: string): Promise<string[]> => {
   try {
-    // First get all topics
-    const topicsRef = ref(database, 'topics');
-    const topicsSnapshot = await get(topicsRef);
-    
-    if (!topicsSnapshot.exists()) {
-      return [];
-    }
-    
-    const allTopics = topicsSnapshot.val();
-    const topicIds = Object.keys(allTopics);
-    
-    // Check all topics in parallel (larger batch size for better performance)
+    if (!studentName) return [];
+
+    const topicIds = await listTopicKeysLight();
+    if (!topicIds.length) return [];
+
     const batchSize = 20;
     const studentTopics: string[] = [];
-    
+
     for (let i = 0; i < topicIds.length; i += batchSize) {
       const batch = topicIds.slice(i, i + batchSize);
-      
-      const batchPromises = batch.map(async (topicId) => {
-        try {
-          const studentInTopicRef = ref(database, `topics/${topicId}/students/${studentName}`);
-          const studentSnapshot = await get(studentInTopicRef);
-          
-          if (studentSnapshot.exists()) {
-            return topicId;
+      const batchResults = await Promise.all(
+        batch.map(async (topicId) => {
+          try {
+            const studentSnapshot = await get(
+              ref(database, `topics/${topicId}/students/${studentName}`)
+            );
+            return studentSnapshot.exists() ? topicId : null;
+          } catch {
+            return null;
           }
-          return null;
-        } catch (error) {
-          // Silently skip errors for faster processing
-          return null;
-        }
-      });
-      
-      const batchResults = await Promise.all(batchPromises);
+        })
+      );
       studentTopics.push(...batchResults.filter((id): id is string => id !== null));
     }
-    
+
     return studentTopics;
   } catch (error) {
-    console.error('Error fetching student topics:', error);
     return [];
   }
 };

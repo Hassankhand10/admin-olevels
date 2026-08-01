@@ -196,7 +196,6 @@ export const AIGradedAssignments = () => {
         );
       }
     } catch (error) {
-      console.error('Error loading AI graded dashboard:', error);
       toast.error('Failed to load AI graded assignments');
       setAllItems([]);
       setHasLoadedOnce(true);

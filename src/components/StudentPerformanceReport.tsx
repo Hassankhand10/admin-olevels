@@ -124,7 +124,6 @@ export const StudentPerformanceReport = () => {
           const category = categories[selectedStudent]?.category || '';
           setStudentCategory(category);
         } catch (error) {
-          console.error('Error loading student category:', error);
           setStudentCategory('');
         }
       } else {
@@ -146,7 +145,6 @@ export const StudentPerformanceReport = () => {
       const topics = await fetchTopics();
       setAllTopics(topics);
     } catch (error) {
-      console.error('Error loading topics:', error);
       toast.error('Failed to load topics');
     }
   };
@@ -159,7 +157,6 @@ export const StudentPerformanceReport = () => {
         setSelectedStudent(studentsList[0].name);
       }
     } catch (error) {
-      console.error('Error loading students:', error);
       toast.error('Failed to load students');
     }
   };
@@ -183,7 +180,6 @@ export const StudentPerformanceReport = () => {
         setSelectedTopic('');
       }
     } catch (error) {
-      console.error('Error loading student topics:', error);
       toast.error('Failed to load student topics');
       setStudentTopics([]);
       setSelectedTopic('');
@@ -205,7 +201,7 @@ export const StudentPerformanceReport = () => {
 
       // Get student ID
       const student = students.find(s => s.name === selectedStudent);
-      const studentId = student?.studentId || selectedStudent;
+      const studentId = String(student?.studentId || selectedStudent || '');
 
       // Determine which topics to process
       const topicsToProcess = selectedTopic && studentTopics.includes(selectedTopic)
@@ -230,19 +226,6 @@ export const StudentPerformanceReport = () => {
 
         // Process classes
         topicClassesData.forEach((classData: any) => {
-          // Log class data structure for debugging
-          console.log('Class data structure:', {
-            id: classData.id,
-            topic: classData.topic,
-            allKeys: Object.keys(classData),
-            teacherName: classData.teacherName,
-            teacher: classData.teacher,
-            teacherId: classData.teacherId,
-            totalMarks: classData.totalMarks,
-            aqcount: classData.aqcount,
-            cqcount: classData.cqcount
-          });
-          
           for (const categoryStudents of Object.values(classData.students || {})) {
             const studentInClass = (categoryStudents as any[]).find((s: any) => 
               s.name === selectedStudent || s.studentId === studentId
@@ -308,7 +291,6 @@ export const StudentPerformanceReport = () => {
                 } as AssignmentData;
               }
             } catch (error) {
-              console.error(`Error processing assignment ${assignment.data.title}:`, error);
             }
             return null;
           });
@@ -342,218 +324,7 @@ export const StudentPerformanceReport = () => {
       setAssignments(assignmentsList);
       setWeeklyTests(weeklyTestsList);
 
-      // Complete data report - log everything
-      const completeReport = {
-        student: {
-          name: selectedStudent,
-          studentId: student?.studentId || selectedStudent,
-          category: studentCategory,
-          topics: studentTopics
-        },
-        filters: {
-          selectedTopic,
-          startDate,
-          endDate,
-          dateRange: {
-            from: fromDate.toISOString(),
-            to: toDate.toISOString()
-          }
-        },
-        statistics: {
-          classes: {
-            total: classesList.length,
-            attended: classesList.filter(c => {
-              for (const categoryStudents of Object.values(c.students || {})) {
-                const student = (categoryStudents as any[]).find((s: any) => s.name === selectedStudent);
-                if (student && student.present !== false) return true;
-              }
-              return false;
-            }).length
-          },
-          assignments: {
-            total: assignmentsList.length,
-            submitted: assignmentsList.filter(a => 
-              a.studentData?.submission || a.studentData?.status === 'submitted' || a.studentData?.status === 'completed'
-            ).length,
-            graded: assignmentsList.filter(a => 
-              a.studentData?.graded || a.studentData?.status === 'graded'
-            ).length
-          },
-          weeklyTests: {
-            total: weeklyTestsList.length,
-            submitted: weeklyTestsList.filter(w => 
-              w.studentData?.submission || w.studentData?.status === 'submitted' || w.studentData?.status === 'completed'
-            ).length,
-            graded: weeklyTestsList.filter(w => 
-              w.studentData?.graded || w.studentData?.status === 'graded'
-            ).length
-          }
-        },
-        previousClasses: classesList.map(classItem => {
-          const studentInClass = Object.values(classItem.students || {}).flat().find((s: any) => 
-            s.name === selectedStudent
-          );
-          
-          return {
-            id: classItem.id,
-            classId: classItem.classId,
-            topic: classItem.topic,
-            topicName: allTopics[classItem.topic]?.name || classItem.topic,
-            teacherName: classItem.teacherName,
-            creationDate: classItem.creationDate,
-            aqcount: classItem.aqcount,
-            cqcount: classItem.cqcount,
-            totalMarks: classItem.totalMarks,
-            studentPerformance: studentInClass ? {
-              aq: studentInClass.aq || 0,
-              cq: studentInClass.cq || 0,
-              totalMarks: (studentInClass.aq || 0) + (studentInClass.cq || 0),
-              percentage: studentInClass.percentage || '0.00',
-              present: studentInClass.present
-            } : null
-          };
-        }),
-        assignments: assignmentsList.map(item => {
-          const studentData = item.studentData || {};
-          const assignmentData = item.assignment.data as any;
-          const assignmentType = assignmentData.type || 'ATTACHMENT';
-          const isInteractive = assignmentType === 'INTERACTIVE' || assignmentType === 'INTERACTIVE_NOTES' || assignmentType === 'QUIZ';
-          
-          let gained = 0;
-          let total = 0;
-          let attempted = 0;
-          let attemptedMarks = 0;
-          
-          if (isInteractive) {
-            if (studentData.performance) {
-              gained = studentData.performance.gained || 0;
-              attempted = studentData.performance.attempted || 0;
-              attemptedMarks = studentData.performance.attempted || 0;
-            } else if (studentData.result && Array.isArray(studentData.result)) {
-              studentData.result.forEach((lessonResult: any) => {
-                gained += parseFloat(lessonResult.gained || '0');
-                attempted += parseFloat(lessonResult.attempted || '0');
-                attemptedMarks += lessonResult.attemptedMarks || 0;
-              });
-            } else {
-              gained = studentData.totalGained || 0;
-              attempted = studentData.totalAttempted || 0;
-              attemptedMarks = studentData.totalAttempted || 0;
-            }
-            total = attemptedMarks > 0 ? attemptedMarks : parseFloat(assignmentData.totalMarks) || 0;
-          } else {
-            gained = studentData.totalGained || studentData.marks || 0;
-            total = parseFloat(assignmentData.totalMarks) || 0;
-          }
-          
-          const percentage = isInteractive 
-            ? (attemptedMarks > 0 ? (gained / attemptedMarks) * 100 : 0)
-            : (total > 0 ? (gained / total) * 100 : 0);
-          
-          return {
-            topicId: item.topicId,
-            topicName: item.topicName,
-            assignmentId: item.assignment.id,
-            title: assignmentData.title,
-            type: assignmentType,
-            deadline: assignmentData.deadline,
-            totalMarks: assignmentData.totalMarks,
-            weightage: assignmentData.weightage,
-            teacherName: assignmentData.teacherName,
-            creationDate: assignmentData.creationDate,
-            studentData: {
-              submission: studentData.submission || false,
-              submissionTime: studentData.submissionTime,
-              graded: studentData.graded || false,
-              gradedAt: studentData.gradedAt,
-              gradedBy: studentData.gradedBy,
-              gradedByTeacher: studentData.gradedByTeacher,
-              marks: studentData.marks,
-              totalGained: studentData.totalGained,
-              feedback: studentData.feedback,
-              message: studentData.message,
-              lateSubmission: studentData.lateSubmission,
-              attachments: studentData.attachments || [],
-              feedbackURLs: studentData.feedbackURLs || [],
-              feedbackvoiceurl: studentData.feedbackvoiceurl,
-              supervisionApproval: studentData.supervisionApproval,
-              supervisionVideoUrl: studentData.supervisionVideoUrl,
-              performance: studentData.performance,
-              result: studentData.result,
-              // Calculated values
-              calculated: {
-                gained,
-                total,
-                attempted,
-                attemptedMarks,
-                percentage: percentage.toFixed(2) + '%'
-              }
-            }
-          };
-        }),
-        weeklyTests: weeklyTestsList.map(item => {
-          const studentData = item.studentData || {};
-          const assignmentData = item.assignment.data as any;
-          
-          const gained = studentData.totalGained || studentData.marks || 0;
-          const total = parseFloat(assignmentData.totalMarks) || 0;
-          const percentage = total > 0 ? (gained / total) * 100 : 0;
-          
-          return {
-            topicId: item.topicId,
-            topicName: item.topicName,
-            assignmentId: item.assignment.id,
-            title: assignmentData.title,
-            type: assignmentData.type || 'ATTACHMENT',
-            deadline: assignmentData.deadline,
-            totalMarks: assignmentData.totalMarks,
-            weightage: assignmentData.weightage,
-            teacherName: assignmentData.teacherName,
-            creationDate: assignmentData.creationDate,
-            studentData: {
-              submission: studentData.submission || false,
-              submissionTime: studentData.submissionTime,
-              graded: studentData.graded || false,
-              gradedAt: studentData.gradedAt,
-              gradedBy: studentData.gradedBy,
-              gradedByTeacher: studentData.gradedByTeacher,
-              marks: studentData.marks,
-              totalGained: studentData.totalGained,
-              feedback: studentData.feedback,
-              message: studentData.message,
-              lateSubmission: studentData.lateSubmission,
-              attachments: studentData.attachments || [],
-              feedbackURLs: studentData.feedbackURLs || [],
-              feedbackvoiceurl: studentData.feedbackvoiceurl,
-              supervisionApproval: studentData.supervisionApproval,
-              supervisionVideoUrl: studentData.supervisionVideoUrl,
-              // Calculated values
-              calculated: {
-                gained,
-                total,
-                percentage: percentage.toFixed(2) + '%'
-              }
-            }
-          };
-        })
-      };
-
-      // Log complete report
-      console.log('=== COMPLETE STUDENT PERFORMANCE REPORT ===');
-      console.log(JSON.stringify(completeReport, null, 2));
-      console.log('=== END COMPLETE REPORT ===');
-      
-      // Also log in a more readable format
-      console.log('=== READABLE FORMAT ===');
-      console.log('STUDENT:', completeReport.student);
-      console.log('FILTERS:', completeReport.filters);
-      console.log('STATISTICS:', completeReport.statistics);
-      console.log('PREVIOUS CLASSES:', completeReport.previousClasses);
-      console.log('ASSIGNMENTS:', completeReport.assignments);
-      console.log('WEEKLY TESTS:', completeReport.weeklyTests);
-      console.log('=== END READABLE FORMAT ===');
     } catch (error) {
-      console.error('Error loading student performance:', error);
       toast.error('Failed to load student performance data');
     } finally {
       setLoading(false);
@@ -629,7 +400,6 @@ export const StudentPerformanceReport = () => {
       if (isNaN(d.getTime())) return 'N/A';
       return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
     } catch (error) {
-      console.error('Error formatting date:', error);
       return 'N/A';
     }
   };
@@ -884,7 +654,6 @@ export const StudentPerformanceReport = () => {
       doc.save(fileName);
       toast.success('PDF generated successfully!');
     } catch (error) {
-      console.error('Error generating PDF:', error);
       toast.error('Failed to generate PDF');
     }
   };
@@ -1068,7 +837,6 @@ export const StudentPerformanceReport = () => {
         throw new Error(result.message || 'No PDF link in response');
       }
     } catch (error) {
-      console.error('Error generating report:', error);
       toast.error('Failed to generate report. Please try again.');
     } finally {
       setGeneratingReport(false);
