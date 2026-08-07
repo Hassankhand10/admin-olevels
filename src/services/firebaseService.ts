@@ -506,29 +506,32 @@ export const updateSupervisionApproval = async (
   }
 };
 
-// Fetch all students from database
+// Fetch all students from database (shallow keys + per-student id fields only).
 export const fetchAllStudents = async (): Promise<Array<{name: string, studentId: string}>> => {
   try {
-    const studentsRef = ref(database, 'students');
-    const snapshot = await get(studentsRef);
-    
-    if (snapshot.exists()) {
-      const data = snapshot.val();
-      const studentsList: Array<{name: string, studentId: string}> = [];
-      
-      Object.keys(data).forEach(studentName => {
-        const studentData = data[studentName];
-        studentsList.push({
-          name: studentName,
-          studentId: String(studentData.studentId || studentData.id || '')
-        });
-      });
-      
-      // Sort by name
-      studentsList.sort((a, b) => a.name.localeCompare(b.name));
-      return studentsList;
+    const peek = await shallowPeek('students');
+    if (peek.kind !== 'branch' || peek.childKeys.length === 0) {
+      return [];
     }
-    return [];
+
+    const studentsList = await mapInChunks(peek.childKeys, 40, async (studentName) => {
+      const [studentIdSnap, idSnap] = await Promise.all([
+        get(ref(database, `students/${studentName}/studentId`)),
+        get(ref(database, `students/${studentName}/id`)),
+      ]);
+      const rawId = studentIdSnap.exists()
+        ? studentIdSnap.val()
+        : idSnap.exists()
+          ? idSnap.val()
+          : '';
+      return {
+        name: studentName,
+        studentId: String(rawId ?? ''),
+      };
+    });
+
+    studentsList.sort((a, b) => a.name.localeCompare(b.name));
+    return studentsList;
   } catch (error) {
     return [];
   }

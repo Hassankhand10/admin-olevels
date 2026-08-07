@@ -1,5 +1,6 @@
 import { ref, get } from 'firebase/database';
 import { database } from '../config/firebase';
+import { shallowPeek } from './realtimeDbShallow';
 
 /** UTF-8 byte length of JSON.stringify(value) — same as a downloaded JSON export for that value. */
 export function utf8JsonByteLength(value: unknown): number {
@@ -64,50 +65,51 @@ export type RealtimeDbSizeScanResult = {
 };
 
 /**
- * One root read (same data as JSON export), then:
- * - Total size = exact UTF-8 length of JSON.stringify(root) without building one giant string (composed from children).
- * - Rows = top-level keys only, each row size = UTF-8 JSON size of that branch (what that subtree would be in export).
+ * Shallow root key list, then one read per top-level branch (profiler-friendly paths):
+ * - Total size = exact UTF-8 length of JSON.stringify(root) composed from child export sizes.
+ * - Rows = top-level keys only, each row size = UTF-8 JSON size of that branch.
  * Yields to the browser between branches so the page stays responsive.
  */
 export async function scanRealtimeDatabaseNodeSizes(): Promise<RealtimeDbSizeScanResult> {
   try {
-    const snapshot = await get(ref(database, '/'));
-    if (!snapshot.exists()) {
+    const peek = await shallowPeek('');
+    if (peek.kind === 'missing') {
       return { nodes: [], totalBytes: 0 };
     }
 
-    const rootVal = snapshot.val();
-    const totalBytes = computeJsonExportUtf8Size(rootVal);
+    if (peek.kind === 'leaf') {
+      const totalBytes = utf8JsonByteLength(peek.value);
+      return { nodes: [{ path: '/', sizeBytes: totalBytes }], totalBytes };
+    }
+
+    const keys = peek.childKeys;
+    const entries: Array<{ key: string; valueJsonUtf8Bytes: number }> = [];
     const nodes: RealtimeDbNodeSizeRow[] = [];
 
-    // Plain object root (typical RTDB)
-    if (rootVal !== null && typeof rootVal === 'object' && !Array.isArray(rootVal)) {
-      const obj = rootVal as Record<string, unknown>;
-      const keys = Object.keys(obj);
-      for (let i = 0; i < keys.length; i++) {
-        const k = keys[i];
-        const child = obj[k];
-        const childBytes = utf8JsonByteLength(child);
-        nodes.push({ path: `/${k}`, sizeBytes: childBytes });
-        if (i % 4 === 3) await yieldToMain();
-      }
-      nodes.sort((a, b) => b.sizeBytes - a.sizeBytes);
-      return { nodes, totalBytes };
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const childSnap = await get(ref(database, k));
+      const childVal = childSnap.exists() ? childSnap.val() : undefined;
+      const childBytes = utf8JsonByteLength(childVal);
+      entries.push({ key: k, valueJsonUtf8Bytes: childBytes });
+      nodes.push({ path: `/${k}`, sizeBytes: childBytes });
+      if (i % 4 === 3) await yieldToMain();
     }
 
-    // Array root
-    if (Array.isArray(rootVal)) {
-      for (let i = 0; i < rootVal.length; i++) {
-        const childBytes = utf8JsonByteLength(rootVal[i]);
-        nodes.push({ path: `/${i}`, sizeBytes: childBytes });
-        if (i % 4 === 3) await yieldToMain();
+    const isArrayRoot =
+      keys.length > 0 && keys.every((k) => /^\d+$/.test(k));
+    let totalBytes: number;
+    if (isArrayRoot) {
+      totalBytes = 2;
+      for (let i = 0; i < entries.length; i++) {
+        if (i > 0) totalBytes += 1;
+        totalBytes += entries[i].valueJsonUtf8Bytes;
       }
-      nodes.sort((a, b) => b.sizeBytes - a.sizeBytes);
-      return { nodes, totalBytes };
+    } else {
+      totalBytes = composeTopLevelObjectJsonUtf8Size(entries);
     }
 
-    // Primitive / null root
-    nodes.push({ path: '/', sizeBytes: totalBytes });
+    nodes.sort((a, b) => b.sizeBytes - a.sizeBytes);
     return { nodes, totalBytes };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
