@@ -352,10 +352,22 @@ export async function fetchWeeklyTestsForTopic(
 
 /**
  * Light topic list (keys + course only). Shallow keys + per-topic course reads —
- * never downloads the full /topics tree.
+ * never downloads the full /topics tree. Session-cached for dashboard badges.
  */
+let topicsSessionCache: {
+  at: number;
+  value: {[key: string]: TopicListEntry};
+} | null = null;
+const TOPICS_SESSION_CACHE_MS = 60_000;
+
 export const fetchTopics = async (): Promise<{[key: string]: TopicListEntry}> => {
   try {
+    if (
+      topicsSessionCache &&
+      Date.now() - topicsSessionCache.at < TOPICS_SESSION_CACHE_MS
+    ) {
+      return topicsSessionCache.value;
+    }
     const keys = await listTopicKeysLight();
     if (!keys.length) {
       return {};
@@ -370,6 +382,7 @@ export const fetchTopics = async (): Promise<{[key: string]: TopicListEntry}> =>
       };
       return topicKey;
     });
+    topicsSessionCache = { at: Date.now(), value: topicsWithCourses };
     return topicsWithCourses;
   } catch (error) {
     return {};

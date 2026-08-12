@@ -232,31 +232,53 @@ export const Dashboard = () => {
         
         const batchPromises = batch.map(async ({ topicId, assignment }) => {
           try {
+            const def = assignment.data || ({} as Assignment);
+            const studentsLength = Number(def.studentsLength) || 0;
+            const submittedCount = Number(def.submissions) || 0;
+            const gradedCount = Number(def.grading) || 0;
+
+            // Prefer definition counters for badges — avoid N× full roster getAll.
+            // Fall back to roster only when counters are missing entirely.
+            if (studentsLength > 0 || submittedCount > 0 || gradedCount > 0) {
+              if (submittedCount > 0 && gradedCount < submittedCount) {
+                return {
+                  topicId,
+                  topicName: topicsData[topicId]?.course?.name || topicId,
+                  assignment,
+                  needsGrading: true,
+                  totalStudents: studentsLength || submittedCount,
+                  submittedStudents: submittedCount,
+                  gradedStudents: gradedCount
+                };
+              }
+              return null;
+            }
+
             const studentData = await fetchStudentSubmissions(topicId, assignment.data.title);
             const studentCount = Object.keys(studentData).length;
             
-            let submittedCount = 0;
-            let gradedCount = 0;
+            let submitted = 0;
+            let graded = 0;
 
             Object.values(studentData).forEach((student: any) => {
               if (student.submission) {
-                submittedCount++;
+                submitted++;
                 if (student.graded) {
-                  gradedCount++;
+                  graded++;
                 }
               }
             });
 
             // Only include if there are submissions but not all are graded
-            if (submittedCount > 0 && gradedCount < submittedCount) {
+            if (submitted > 0 && graded < submitted) {
               return {
                 topicId,
                 topicName: topicsData[topicId]?.course?.name || topicId,
                 assignment,
                 needsGrading: true,
                 totalStudents: studentCount,
-                submittedStudents: submittedCount,
-                gradedStudents: gradedCount
+                submittedStudents: submitted,
+                gradedStudents: graded
               };
             }
             return null;

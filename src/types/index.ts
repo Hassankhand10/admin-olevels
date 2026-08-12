@@ -7,6 +7,10 @@ export interface Assignment {
   selectedAssignmentCategory: string;
   teacherName: string;
   creationDate?: number;
+  /** Denormalized roster counters on Assignments definition (preferred for badges). */
+  studentsLength?: number;
+  submissions?: number;
+  grading?: number;
   /** Grading mode for weekly tests / past paper practice. `"ai"` | `"peer"` | undefined. */
   weeklyTestGradingMode?: string;
   /** While AI is grading: typically `AI_GRADING_STATUS_IN_PROCESS` (see `isAiGradingStatusInProcess` in firebaseService). */
