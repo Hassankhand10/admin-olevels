@@ -1,4 +1,5 @@
 import { firebaseDatabaseURL } from '../config/firebase';
+import { olevelsIdToken } from '../utils/olevelsAuth';
 
 export type ShallowPeekResult =
   | { kind: 'missing' }
@@ -20,9 +21,20 @@ function buildJsonUrl(fullPath: string, query: string): string {
 /**
  * Lists immediate child keys at `fullPath` without downloading values (REST `shallow=true`).
  * Same bandwidth pattern as Firebase console when listing keys.
+ * RTDB requires `?auth=` (Firebase ID token) — never Authorization Bearer.
  */
 export async function shallowPeek(fullPath: string): Promise<ShallowPeekResult> {
-  const url = buildJsonUrl(fullPath === '' ? '/' : fullPath, 'shallow=true');
+  const params = new URLSearchParams({ shallow: 'true' });
+  try {
+    const token = await olevelsIdToken();
+    if (token) {
+      params.set('auth', token);
+    }
+  } catch {
+    /* proceed without auth */
+  }
+
+  const url = buildJsonUrl(fullPath === '' ? '/' : fullPath, params.toString());
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Shallow read failed (${res.status} ${res.statusText})`);

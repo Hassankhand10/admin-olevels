@@ -1,6 +1,5 @@
 import { ref, get } from 'firebase/database';
 import { database } from '../config/firebase';
-import { shallowPeek } from './realtimeDbShallow';
 
 /** UTF-8 byte length of JSON.stringify(value) — same as a downloaded JSON export for that value. */
 export function utf8JsonByteLength(value: unknown): number {
@@ -65,51 +64,93 @@ export type RealtimeDbSizeScanResult = {
 };
 
 /**
- * Shallow root key list, then one read per top-level branch (profiler-friendly paths):
- * - Total size = exact UTF-8 length of JSON.stringify(root) composed from child export sizes.
- * - Rows = top-level keys only, each row size = UTF-8 JSON size of that branch.
+ * Known top-level RTDB roots (matches shared database.rules.json).
+ * Root `/` is denied by rules — scan each child path instead of shallowPeek('').
+ */
+const KNOWN_RTDB_ROOTS = [
+  'students',
+  'teachers',
+  'topics',
+  'admin',
+  'sessionProofs',
+  'ai',
+  'h5pContent',
+  'pastPapers',
+  'assignmentCategories',
+  'assignments',
+  'assignmentStudents',
+  'profileTags',
+  'timetable',
+  'holidays',
+  'activeClasses',
+  'lessons',
+  'themes',
+  'wallpapers',
+  'assessements',
+  'rumbletalk',
+  'groupBoard',
+  'groupMessages',
+  'groupConference',
+  'conferenceSessions',
+  'callLogs',
+  'locks',
+  'chats',
+  'zoomMeetings',
+  'playlists',
+  'playlistCompletions',
+  'rewards',
+  'rewardCollection',
+  'tiers',
+  'downtimeSettings',
+  'users',
+  'Student-Notification',
+  'CRMSettings',
+  'ExamCRMResult',
+  'claimWindowForceOpenIndex',
+  'learningAideEvaluationReports',
+  'StudentMonitoring',
+  'notifications',
+  'topicMeta',
+  'topicIndexesStatus',
+  'studentTopics',
+  'studentIdTopics',
+  'groupTopics',
+  'ActivityCoins',
+  'entryLogs',
+  'gradingLocks',
+  'sessions',
+  'nuclei',
+  'olevelsApp',
+] as const;
+
+/**
+ * Per-root reads (root `/` is locked). Total ≈ composed JSON size of present branches.
  * Yields to the browser between branches so the page stays responsive.
  */
 export async function scanRealtimeDatabaseNodeSizes(): Promise<RealtimeDbSizeScanResult> {
   try {
-    const peek = await shallowPeek('');
-    if (peek.kind === 'missing') {
-      return { nodes: [], totalBytes: 0 };
-    }
-
-    if (peek.kind === 'leaf') {
-      const totalBytes = utf8JsonByteLength(peek.value);
-      return { nodes: [{ path: '/', sizeBytes: totalBytes }], totalBytes };
-    }
-
-    const keys = peek.childKeys;
-    const entries: Array<{ key: string; valueJsonUtf8Bytes: number }> = [];
     const nodes: RealtimeDbNodeSizeRow[] = [];
+    const entries: Array<{ key: string; valueJsonUtf8Bytes: number }> = [];
 
-    for (let i = 0; i < keys.length; i++) {
-      const k = keys[i];
-      const childSnap = await get(ref(database, k));
-      const childVal = childSnap.exists() ? childSnap.val() : undefined;
-      const childBytes = utf8JsonByteLength(childVal);
-      entries.push({ key: k, valueJsonUtf8Bytes: childBytes });
-      nodes.push({ path: `/${k}`, sizeBytes: childBytes });
+    for (let i = 0; i < KNOWN_RTDB_ROOTS.length; i++) {
+      const key = KNOWN_RTDB_ROOTS[i];
+      try {
+        const snapshot = await get(ref(database, key));
+        if (!snapshot.exists()) {
+          if (i % 4 === 3) await yieldToMain();
+          continue;
+        }
+        const childBytes = utf8JsonByteLength(snapshot.val());
+        nodes.push({ path: `/${key}`, sizeBytes: childBytes });
+        entries.push({ key, valueJsonUtf8Bytes: childBytes });
+      } catch {
+        // Permission or missing — skip branch.
+      }
       if (i % 4 === 3) await yieldToMain();
     }
 
-    const isArrayRoot =
-      keys.length > 0 && keys.every((k) => /^\d+$/.test(k));
-    let totalBytes: number;
-    if (isArrayRoot) {
-      totalBytes = 2;
-      for (let i = 0; i < entries.length; i++) {
-        if (i > 0) totalBytes += 1;
-        totalBytes += entries[i].valueJsonUtf8Bytes;
-      }
-    } else {
-      totalBytes = composeTopLevelObjectJsonUtf8Size(entries);
-    }
-
     nodes.sort((a, b) => b.sizeBytes - a.sizeBytes);
+    const totalBytes = composeTopLevelObjectJsonUtf8Size(entries);
     return { nodes, totalBytes };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

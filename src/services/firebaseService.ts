@@ -38,6 +38,7 @@ async function mapInChunks<T, R>(
 
 const ASSIGNMENTS_COL = 'Assignments';
 const ASSIGNMENT_STUDENTS_COL = 'AssignmentStudents';
+const ASSIGNMENT_BOARDS_COL = 'AssignmentBoards';
 
 /** Firestore doc id: `{topic}__{encodeURIComponent(title)}` */
 export function buildAssignmentDocId(topic: string, title: string): string {
@@ -207,6 +208,34 @@ async function fetchAssignmentStudentsFromFirestore(
   assignmentTitle: string
 ): Promise<StudentData> {
   const assignmentDocId = buildAssignmentDocId(topic, assignmentTitle);
+
+  // Prefer rebuilt slim board (1 read). UX LOCK: no rebuiltAt → full students.
+  try {
+    const boardSnap = await getDoc(
+      doc(firestore, ASSIGNMENT_BOARDS_COL, assignmentDocId)
+    );
+    if (boardSnap.exists()) {
+      const data = boardSnap.data() as Record<string, unknown>;
+      if (data.rebuiltAt != null) {
+        const raw =
+          data.students && typeof data.students === 'object'
+            ? (data.students as Record<string, unknown>)
+            : {};
+        const merged: StudentData = {};
+        Object.keys(raw).forEach((sid) => {
+          const name = decodeStudentNameFromFirestore(sid);
+          const row = raw[sid];
+          if (row && typeof row === 'object') {
+            merged[name] = row as StudentData[string];
+          }
+        });
+        return merged;
+      }
+    }
+  } catch (err) {
+    console.warn('[admin] AssignmentBoards get failed; full students', err);
+  }
+
   const studentsCol = collection(
     firestore,
     ASSIGNMENT_STUDENTS_COL,
