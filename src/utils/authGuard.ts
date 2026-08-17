@@ -4,6 +4,13 @@ import { database } from '../config/firebase';
 import { ref, get } from 'firebase/database';
 import { ensureOlevelsSignedIn } from './olevelsAuth';
 
+/**
+ * Shared SSO contract (same as Exam / Redeem / class):
+ * - Cookie: slim teacher session with sessionProof (no customToken required)
+ * - Auth: POST /auth/exchange as role "teacher" → Firebase
+ * - Admin: RTDB teachers/{user}.admin or moduleAccess.admin (never cookie boolean alone)
+ */
+
 const showAdminAccessDeniedPage = () => {
   document.body.innerHTML = `
     <div style="
@@ -62,19 +69,21 @@ const showAdminAccessDeniedPage = () => {
   }, 1000);
 };
 
-/** Slim SSO cookie from live.olevels.com (password/OTP may be absent). */
+/** Slim SSO cookie from live.olevels.com — fields may be partial. */
 interface TeacherAuth {
-  id: number;
-  username: string;
+  id?: number;
+  username?: string;
   password?: string;
-  email: string;
-  admin: boolean;
-  displayName: string;
+  email?: string;
+  admin?: boolean | string;
+  displayName?: string;
   OTP?: string;
-  isTeacher: boolean;
+  isTeacher?: boolean | string;
+  role?: string;
   sessionProof?: string;
   sessionEpoch?: number;
-  customToken?: string;
+  name?: string;
+  teacherName?: string;
 }
 
 function parseTeacherCookiePayload(raw: string): TeacherAuth | null {
@@ -105,6 +114,27 @@ function parseTeacherCookiePayload(raw: string): TeacherAuth | null {
   return null;
 }
 
+/** Staff cookie is enough to attempt SSO — do not require isTeacher/admin booleans. */
+export function looksLikeStaffSession(data: TeacherAuth | null): boolean {
+  if (!data) return false;
+  if (data.isTeacher === false) return false;
+  if (data.isTeacher === true || data.admin === true || data.admin === 'true') {
+    return true;
+  }
+  const role = String(data.role || '').toLowerCase();
+  if (role === 'teacher' || role === 'admin') return true;
+  return !!(
+    data.sessionProof &&
+    (data.username || data.displayName || data.name || data.teacherName)
+  );
+}
+
+export function teacherUsername(data: TeacherAuth | null): string {
+  return String(
+    data?.username || data?.displayName || data?.name || data?.teacherName || ''
+  ).trim();
+}
+
 export const checkTeacherCookies = (): TeacherAuth | null => {
   try {
     const cookies = document.cookie.split('; ');
@@ -119,6 +149,12 @@ export const checkTeacherCookies = (): TeacherAuth | null => {
     }
 
     if (!teacherCookie) {
+      try {
+        const ls = localStorage.getItem('teacher_login');
+        if (ls) return JSON.parse(ls) as TeacherAuth;
+      } catch {
+        /* ignore */
+      }
       return null;
     }
 
@@ -128,9 +164,10 @@ export const checkTeacherCookies = (): TeacherAuth | null => {
   }
 };
 
-export const checkAdminStatusFromFirebase = async (username: string): Promise<boolean> => {
+export const checkAdminStatusFromFirebase = async (
+  username: string
+): Promise<boolean> => {
   try {
-    // RTDB rules require auth != null — exchange must finish first.
     await ensureOlevelsSignedIn();
 
     const teacherRef = ref(database, `teachers/${username}`);
@@ -138,6 +175,7 @@ export const checkAdminStatusFromFirebase = async (username: string): Promise<bo
     if (teacherSnapshot.exists()) {
       const teacherData = teacherSnapshot.val();
       if (teacherData.admin === true) return true;
+      if (teacherData.moduleAccess?.admin === true) return true;
     }
 
     const moduleAccessRef = ref(database, `teachers/${username}/moduleAccess`);
@@ -154,98 +192,75 @@ export const checkAdminStatusFromFirebase = async (username: string): Promise<bo
   }
 };
 
+const isLocalDevHost = () =>
+  window.location.hostname === 'localhost' ||
+  window.location.hostname === '127.0.0.1';
+
 export const isAuthenticatedAdminAsync = async (): Promise<boolean> => {
-  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    return true;
-  }
+  if (isLocalDevHost()) return true;
 
   const teacherData = checkTeacherCookies();
-  if (!teacherData || !teacherData.isTeacher) {
-    return false;
-  }
-
-  return checkAdminStatusFromFirebase(teacherData.username);
+  if (!looksLikeStaffSession(teacherData)) return false;
+  const username = teacherUsername(teacherData);
+  if (!username) return false;
+  return checkAdminStatusFromFirebase(username);
 };
 
+/** Sync hint only — real admin = RTDB via isAuthenticatedAdminAsync / authGuardAsync. */
 export const isAuthenticatedAdmin = (): boolean => {
-  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    return true;
-  }
-
-  const teacherData = checkTeacherCookies();
-  if (!teacherData) {
-    return false;
-  }
-
-  return teacherData.isTeacher === true;
+  if (isLocalDevHost()) return true;
+  return looksLikeStaffSession(checkTeacherCookies());
 };
 
 export const authGuardAsync = async (): Promise<boolean> => {
-  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    return true;
-  }
+  if (isLocalDevHost()) return true;
 
   const teacherData = checkTeacherCookies();
   const currentUrl = encodeURIComponent(window.location.href);
 
-  if (!teacherData) {
+  if (!looksLikeStaffSession(teacherData)) {
     window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
     return false;
   }
 
-  if (!teacherData.isTeacher) {
+  const username = teacherUsername(teacherData);
+  if (!username) {
     window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
     return false;
   }
 
   const firebaseUser = await ensureOlevelsSignedIn();
   if (!firebaseUser) {
-    console.warn('[authGuard] teacher cookie present but Firebase session missing — re-SSO');
+    console.warn(
+      '[authGuard] teacher cookie present but Firebase session missing — re-SSO'
+    );
     window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
     return false;
   }
 
-  try {
-    const isAdmin = await checkAdminStatusFromFirebase(teacherData.username);
-
-    if (!isAdmin) {
-      showAdminAccessDeniedPage();
-      return false;
-    }
-
-    return true;
-  } catch {
-    if (!teacherData.admin) {
-      showAdminAccessDeniedPage();
-      return false;
-    }
-    return true;
+  const isAdmin = await checkAdminStatusFromFirebase(username);
+  if (!isAdmin) {
+    showAdminAccessDeniedPage();
+    return false;
   }
+  return true;
 };
 
+/**
+ * Sync entry: cookie present only. Never block on cookie.admin / isTeacher —
+ * those fields are often missing on slim SSO cookies. Callers that need a
+ * hard gate must use authGuardAsync.
+ */
 export const authGuard = (): boolean => {
-  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    return true;
-  }
+  if (isLocalDevHost()) return true;
 
   const teacherData = checkTeacherCookies();
   const currentUrl = encodeURIComponent(window.location.href);
 
-  if (!teacherData) {
+  if (!looksLikeStaffSession(teacherData)) {
     window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
     return false;
   }
-
-  if (!teacherData.isTeacher) {
-    window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
-    return false;
-  }
-
-  if (!teacherData.admin) {
-    showAdminAccessDeniedPage();
-    return false;
-  }
-
   return true;
 };
 
@@ -276,8 +291,13 @@ export const logout = () => {
     localStorage.removeItem('teacher_login');
     const pastDate = new Date(0).toUTCString();
     document.cookie = `teacher=; domain=olevels.com; path=/; expires=${pastDate}`;
-    const logoutMessage = encodeURIComponent('You have been logged out successfully.');
-    window.open(`${getTeacherPortalUrl()}/teacher?message=${logoutMessage}`, '_blank');
+    const logoutMessage = encodeURIComponent(
+      'You have been logged out successfully.'
+    );
+    window.open(
+      `${getTeacherPortalUrl()}/teacher?message=${logoutMessage}`,
+      '_blank'
+    );
   } catch {
     window.open(`${getTeacherPortalUrl()}/teacher`, '_blank');
   }

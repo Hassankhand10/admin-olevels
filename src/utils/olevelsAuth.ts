@@ -17,7 +17,6 @@ interface OlevelsSession {
   displayName?: string;
   sessionProof: string;
   sessionEpoch: number;
-  customToken?: string;
 }
 
 const EXCHANGE_PATH = 'auth/exchange';
@@ -95,13 +94,14 @@ function readSession(): OlevelsSession | null {
     if (!data || !data.sessionProof) {
       continue;
     }
+    // Always exchange staff as "teacher". Server sets claim role to admin when
+    // RTDB teachers/{u}.admin is true — do not depend on cookie.admin / customToken.
     return {
-      role: role === 'teacher' && data.admin === true ? 'admin' : role,
-      username: data.username || data.displayName,
-      displayName: data.displayName || data.username,
+      role: role === 'student' ? 'student' : 'teacher',
+      username: data.username || data.displayName || data.name,
+      displayName: data.displayName || data.username || data.name,
       sessionProof: String(data.sessionProof),
       sessionEpoch: Number(data.sessionEpoch || 0),
-      customToken: data.customToken ? String(data.customToken) : undefined,
     };
   }
   return null;
@@ -114,15 +114,6 @@ let pending: Promise<User | null> | null = null;
 async function exchange(session: OlevelsSession): Promise<User | null> {
   if (!auth) {
     return null;
-  }
-
-  if (session.customToken) {
-    try {
-      const credential = await signInWithCustomToken(auth, session.customToken);
-      return credential.user;
-    } catch (err) {
-      console.warn('[olevelsAuth] customToken sign-in failed, trying exchange', err);
-    }
   }
 
   const res = await baseFetch(`${apiRoot()}${EXCHANGE_PATH}`, {
