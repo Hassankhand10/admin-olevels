@@ -1,9 +1,3 @@
-/**
- * Cookie SSO -> POST /auth/exchange -> Firebase custom token -> Bearer header.
- *
- * `installOlevelsAuth()` wraps `window.fetch` so the scattered API calls in
- * this app gain an Authorization header without touching the call sites.
- */
 import { signInWithCustomToken, type User } from 'firebase/auth';
 
 import { auth } from '../config/firebase';

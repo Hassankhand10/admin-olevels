@@ -4,6 +4,7 @@ import { Dashboard } from './components/Dashboard';
 import { StudentPerformanceReport } from './components/StudentPerformanceReport';
 import { AIGradedAssignments } from './components/AIGradedAssignments';
 import { RealtimeDbSizePage } from './components/RealtimeDbSizePage';
+import { CheckerUsagePage } from './components/CheckerUsagePage';
 import { useAuthGuard } from './utils/authGuard';
 
 // Protected Route Component
@@ -67,6 +68,11 @@ function App() {
         <Route path="/dashboard/realtime-db-size" element={
           <ProtectedRoute>
             <RealtimeDbSizePage />
+          </ProtectedRoute>
+        } />
+        <Route path="/dashboard/checker-usage" element={
+          <ProtectedRoute>
+            <CheckerUsagePage />
           </ProtectedRoute>
         } />
         <Route path="/home" element={<Navigate to="/dashboard" replace />} />

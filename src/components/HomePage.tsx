@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FileText, BarChart, Sparkles, Database } from 'lucide-react';
+import { FileText, BarChart, Sparkles, Database, FileSearch } from 'lucide-react';
 import OLevelsLogo from '../assets/OLevels-logo-color.png';
 
 interface CardData {
@@ -46,6 +46,14 @@ export const HomePage = () => {
       icon: Database,
       description: 'Expandable tree: subtree sizes; optional one-click exact total',
       onClick: () => navigate('/dashboard/realtime-db-size'),
+      isMain: true
+    },
+    {
+      id: 'checker-usage',
+      title: 'CHECKER USAGE',
+      icon: FileSearch,
+      description: 'AI & plagiarism checker activity by student',
+      onClick: () => navigate('/dashboard/checker-usage'),
       isMain: true
     },
   ];
