@@ -11,10 +11,16 @@ export interface Assignment {
   weeklyTestGradingMode?: string;
   /** While AI is grading: typically `AI_GRADING_STATUS_IN_PROCESS` (see `isAiGradingStatusInProcess` in firebaseService). */
   aiGradingStatus?: string;
-  /** Assignment-level AI queue state, e.g. `PENDING` — compared case-insensitively in admin dashboard logic. */
+  /** Assignment-level AI queue state, e.g. `PENDING` / `COMPLETED` — compared case-insensitively in admin dashboard logic. */
   aiAssignmentStatus?: string;
+  /** Learning Aide pipeline flag (`completed` when AI assignment creation/processing is done). */
+  aiAssignmentProcessingStatus?: string;
   /** External AI assignment record id when linked. With `pending` status, admin shows “evaluation incomplete”. */
   aiAssignmentId?: string | number;
+  /** Assignment-doc counter of submissions (teacher portal `submissions` field). */
+  submissionCount?: number;
+  /** Assignment-doc counter of graded papers (teacher portal `grading` field). */
+  gradedCount?: number;
 }
 
 export interface StudentSubmission {

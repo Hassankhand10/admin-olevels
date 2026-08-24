@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ComponentType } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Bot,
@@ -25,7 +25,9 @@ import toast, { Toaster } from 'react-hot-toast';
 import OLevelsLogo from '../assets/OLevels-logo-color.png';
 import {
   fetchAllAIGradedAssignmentsAcrossTopics,
+  enrichAIGradedItemsWithSubmissionCounts,
   isPastPaperPracticeCategory,
+  isWeeklyTestCategory,
   AIGradedAssignmentItem,
   AIGradingStatus,
 } from '../services/firebaseService';
@@ -170,6 +172,7 @@ export const AIGradedAssignments = () => {
 
   const [allTopics, setAllTopics] = useState<TopicMetaMap>({});
   const [allItems, setAllItems] = useState<AIGradedAssignmentItem[]>([]);
+  const allItemsRef = useRef<AIGradedAssignmentItem[]>([]);
   const [loadingItems, setLoadingItems] = useState(false);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
 
@@ -178,30 +181,83 @@ export const AIGradedAssignments = () => {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('all');
   const [search, setSearch] = useState('');
+  const [enrichingCounts, setEnrichingCounts] = useState(false);
+  const loadGenerationRef = useRef(0);
 
   useEffect(() => {
     void loadDashboard();
   }, []);
 
   const loadDashboard = async () => {
+    const generation = ++loadGenerationRef.current;
     setLoadingItems(true);
+    setEnrichingCounts(false);
     try {
-      const { items, topics } = await fetchAllAIGradedAssignmentsAcrossTopics();
-      setAllItems(items);
+      const { items, topics, failedTopicIds } = await fetchAllAIGradedAssignmentsAcrossTopics();
+      if (generation !== loadGenerationRef.current) return;
+
       setAllTopics(topics as TopicMetaMap);
+
+      let nextItems = items;
+      if (failedTopicIds.length > 0) {
+        const failed = new Set(failedTopicIds);
+        const keptFromFailedTopics = allItemsRef.current.filter((row) =>
+          failed.has(row.topicId)
+        );
+        if (keptFromFailedTopics.length > 0) {
+          nextItems = [...items, ...keptFromFailedTopics].sort((a, b) => {
+            const da = a.assignment.data.deadline
+              ? new Date(a.assignment.data.deadline).getTime()
+              : 0;
+            const db = b.assignment.data.deadline
+              ? new Date(b.assignment.data.deadline).getTime()
+              : 0;
+            return db - da;
+          });
+        }
+      }
+      allItemsRef.current = nextItems;
+      setAllItems(nextItems);
       setHasLoadedOnce(true);
+      setLoadingItems(false);
+
+      if (failedTopicIds.length > 0) {
+        toast.error(
+          `Could not refresh ${failedTopicIds.length} topic(s). Kept previous assignments for those topics.`
+        );
+      }
       if (items.length > 0) {
         toast.success(
           `Loaded ${items.length} AI-graded assignment${items.length === 1 ? '' : 's'}.`
         );
       }
+
+      // Backfill submission counts in the background — list is already visible.
+      if (nextItems.length > 0) {
+        setEnrichingCounts(true);
+        void enrichAIGradedItemsWithSubmissionCounts(
+          nextItems,
+          (updated) => {
+            if (generation !== loadGenerationRef.current) return;
+            allItemsRef.current = updated;
+            setAllItems(updated);
+          },
+          () => generation === loadGenerationRef.current
+        ).finally(() => {
+          if (generation === loadGenerationRef.current) {
+            setEnrichingCounts(false);
+          }
+        });
+      }
     } catch (error) {
       console.error('Error loading AI graded dashboard:', error);
-      toast.error('Failed to load AI graded assignments');
-      setAllItems([]);
+      if (generation !== loadGenerationRef.current) return;
+      toast.error('Failed to refresh AI graded assignments — previous list kept');
       setHasLoadedOnce(true);
     } finally {
-      setLoadingItems(false);
+      if (generation === loadGenerationRef.current) {
+        setLoadingItems(false);
+      }
     }
   };
 
@@ -251,7 +307,7 @@ export const AIGradedAssignments = () => {
       if (statusFilter !== 'all' && item.status !== statusFilter) return false;
       if (categoryFilter !== 'all') {
         const cat = item.assignment.data.selectedAssignmentCategory;
-        if (categoryFilter === 'WeeklyTest' && cat !== 'WeeklyTest') return false;
+        if (categoryFilter === 'WeeklyTest' && !isWeeklyTestCategory(cat)) return false;
         if (categoryFilter === 'pastPaper' && !isPastPaperPracticeCategory(cat)) return false;
       }
       if (search.trim()) {
@@ -317,15 +373,23 @@ export const AIGradedAssignments = () => {
                 </p>
               </div>
             </div>
-            <button
-              onClick={() => void loadDashboard()}
-              disabled={loadingItems}
-              className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg shadow-md text-sm font-semibold transition-all"
-              title="Reload from all topics"
-            >
-              <RefreshCw className={`w-4 h-4 ${loadingItems ? 'animate-spin' : ''}`} />
-              {loadingItems ? 'Refreshing…' : 'Refresh'}
-            </button>
+            <div className="flex items-center gap-3">
+              {enrichingCounts && !loadingItems && (
+                <span className="hidden sm:inline-flex items-center gap-2 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-lg">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Updating submission counts…
+                </span>
+              )}
+              <button
+                onClick={() => void loadDashboard()}
+                disabled={loadingItems}
+                className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg shadow-md text-sm font-semibold transition-all"
+                title="Reload from all topics"
+              >
+                <RefreshCw className={`w-4 h-4 ${loadingItems ? 'animate-spin' : ''}`} />
+                {loadingItems ? 'Refreshing…' : 'Refresh'}
+              </button>
+            </div>
           </div>
         </div>
       </header>
