@@ -64,50 +64,93 @@ export type RealtimeDbSizeScanResult = {
 };
 
 /**
- * One root read (same data as JSON export), then:
- * - Total size = exact UTF-8 length of JSON.stringify(root) without building one giant string (composed from children).
- * - Rows = top-level keys only, each row size = UTF-8 JSON size of that branch (what that subtree would be in export).
+ * Known top-level RTDB roots (matches shared database.rules.json).
+ * Root `/` is denied by rules — scan each child path instead of shallowPeek('').
+ */
+const KNOWN_RTDB_ROOTS = [
+  'students',
+  'teachers',
+  'topics',
+  'admin',
+  'sessionProofs',
+  'ai',
+  'h5pContent',
+  'pastPapers',
+  'assignmentCategories',
+  'assignments',
+  'assignmentStudents',
+  'profileTags',
+  'timetable',
+  'holidays',
+  'activeClasses',
+  'lessons',
+  'themes',
+  'wallpapers',
+  'assessements',
+  'rumbletalk',
+  'groupBoard',
+  'groupMessages',
+  'groupConference',
+  'conferenceSessions',
+  'callLogs',
+  'locks',
+  'chats',
+  'zoomMeetings',
+  'playlists',
+  'playlistCompletions',
+  'rewards',
+  'rewardCollection',
+  'tiers',
+  'downtimeSettings',
+  'users',
+  'Student-Notification',
+  'CRMSettings',
+  'ExamCRMResult',
+  'claimWindowForceOpenIndex',
+  'learningAideEvaluationReports',
+  'StudentMonitoring',
+  'notifications',
+  'topicMeta',
+  'topicIndexesStatus',
+  'studentTopics',
+  'studentIdTopics',
+  'groupTopics',
+  'ActivityCoins',
+  'entryLogs',
+  'gradingLocks',
+  'sessions',
+  'nuclei',
+  'olevelsApp',
+] as const;
+
+/**
+ * Per-root reads (root `/` is locked). Total ≈ composed JSON size of present branches.
  * Yields to the browser between branches so the page stays responsive.
  */
 export async function scanRealtimeDatabaseNodeSizes(): Promise<RealtimeDbSizeScanResult> {
   try {
-    const snapshot = await get(ref(database, '/'));
-    if (!snapshot.exists()) {
-      return { nodes: [], totalBytes: 0 };
-    }
-
-    const rootVal = snapshot.val();
-    const totalBytes = computeJsonExportUtf8Size(rootVal);
     const nodes: RealtimeDbNodeSizeRow[] = [];
+    const entries: Array<{ key: string; valueJsonUtf8Bytes: number }> = [];
 
-    // Plain object root (typical RTDB)
-    if (rootVal !== null && typeof rootVal === 'object' && !Array.isArray(rootVal)) {
-      const obj = rootVal as Record<string, unknown>;
-      const keys = Object.keys(obj);
-      for (let i = 0; i < keys.length; i++) {
-        const k = keys[i];
-        const child = obj[k];
-        const childBytes = utf8JsonByteLength(child);
-        nodes.push({ path: `/${k}`, sizeBytes: childBytes });
-        if (i % 4 === 3) await yieldToMain();
+    for (let i = 0; i < KNOWN_RTDB_ROOTS.length; i++) {
+      const key = KNOWN_RTDB_ROOTS[i];
+      try {
+        const snapshot = await get(ref(database, key));
+        if (!snapshot.exists()) {
+          if (i % 4 === 3) await yieldToMain();
+          continue;
+        }
+        const childBytes = utf8JsonByteLength(snapshot.val());
+        nodes.push({ path: `/${key}`, sizeBytes: childBytes });
+        entries.push({ key, valueJsonUtf8Bytes: childBytes });
+      } catch {
+        // Permission or missing — skip branch.
       }
-      nodes.sort((a, b) => b.sizeBytes - a.sizeBytes);
-      return { nodes, totalBytes };
+      if (i % 4 === 3) await yieldToMain();
     }
 
-    // Array root
-    if (Array.isArray(rootVal)) {
-      for (let i = 0; i < rootVal.length; i++) {
-        const childBytes = utf8JsonByteLength(rootVal[i]);
-        nodes.push({ path: `/${i}`, sizeBytes: childBytes });
-        if (i % 4 === 3) await yieldToMain();
-      }
-      nodes.sort((a, b) => b.sizeBytes - a.sizeBytes);
-      return { nodes, totalBytes };
-    }
-
-    // Primitive / null root
-    nodes.push({ path: '/', sizeBytes: totalBytes });
+    nodes.sort((a, b) => b.sizeBytes - a.sizeBytes);
+    const totalBytes = composeTopLevelObjectJsonUtf8Size(entries);
     return { nodes, totalBytes };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

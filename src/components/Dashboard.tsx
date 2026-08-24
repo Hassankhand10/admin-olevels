@@ -175,7 +175,7 @@ export const Dashboard = () => {
   const loadCourses = async () => {
     setLoadingCourses(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/apiGen2/admin/getAllCourses`);
+      const response = await fetch(`${API_BASE_URL}/api/admin/getAllCourses`);
       const data = await response.json();
       
       if (data.success) {
@@ -189,7 +189,6 @@ export const Dashboard = () => {
         toast.error('Failed to load courses');
       }
     } catch (error) {
-      console.error('Error loading courses:', error);
       toast.error('Error loading courses');
     } finally {
       setLoadingCourses(false);
@@ -203,7 +202,6 @@ export const Dashboard = () => {
       setAllTopics(topicsData);
       toast.success('Topics loaded successfully');
     } catch (error) {
-      console.error('Error loading topics:', error);
       toast.error('Error loading topics');
     } finally {
       setLoadingTopics(false);
@@ -244,33 +242,32 @@ export const Dashboard = () => {
             );
             const studentCount = Object.keys(studentData).length;
             
-            let submittedCount = 0;
-            let gradedCount = 0;
+            let submitted = 0;
+            let graded = 0;
 
             Object.values(studentData).forEach((student: any) => {
               if (student.submission) {
-                submittedCount++;
+                submitted++;
                 if (student.graded) {
-                  gradedCount++;
+                  graded++;
                 }
               }
             });
 
             // Only include if there are submissions but not all are graded
-            if (submittedCount > 0 && gradedCount < submittedCount) {
+            if (submitted > 0 && graded < submitted) {
               return {
                 topicId,
                 topicName: topicsData[topicId]?.course?.name || topicId,
                 assignment,
                 needsGrading: true,
                 totalStudents: studentCount,
-                submittedStudents: submittedCount,
-                gradedStudents: gradedCount
+                submittedStudents: submitted,
+                gradedStudents: graded
               };
             }
             return null;
           } catch (error) {
-            console.error(`Error checking assignment ${assignment.data.title} in topic ${topicId}:`, error);
             return null;
           }
         });
@@ -293,7 +290,6 @@ export const Dashboard = () => {
       setAssignmentsByCourse(courseGrouped);
       
     } catch (error) {
-      console.error('Error loading ungraded assignments:', error);
       toast.error('Error loading ungraded assignments');
     } finally {
       setLoadingUngradedAssignments(false);
@@ -357,7 +353,6 @@ export const Dashboard = () => {
 
             return null; // This function doesn't return assignment data, just processes papers
           } catch (error) {
-            console.error(`Error checking unmarked papers for assignment ${assignment.data.title} in topic ${topicId}:`, error);
             return null;
           }
         });
@@ -378,7 +373,6 @@ export const Dashboard = () => {
       });
       
     } catch (error) {
-      console.error('Error loading unmarked papers:', error);
       toast.error('Error loading unmarked papers');
     }
   };
@@ -443,7 +437,6 @@ export const Dashboard = () => {
     }
   };
 
-
   const filterTopicsByCourse = () => {
     if (!selectedCourse || selectedCourse.id === 'all') {
       // Show all topics when "All" is selected or no course is selected
@@ -504,7 +497,6 @@ export const Dashboard = () => {
       const studentCount = Object.keys(studentData).length;
       toast.success(`Loaded ${studentCount} student submissions`);
     } catch (error) {
-      console.error('Error loading student submissions:', error);
       const errorMessage = error instanceof Error ? error.message : 'Failed to load student submissions';
       toast.error(`Error loading submissions: ${errorMessage}`);
       setStudents({});
@@ -532,12 +524,10 @@ export const Dashboard = () => {
         toast.success(`Supervision approval removed successfully for ${studentName}`);
       }
     } catch (error) {
-      console.error('Error updating supervision approval:', error);
       const errorMessage = error instanceof Error ? error.message : 'Failed to update supervision approval';
       toast.error(`Error updating supervision approval: ${errorMessage}`);
     }
   };
-
 
   const formatDeadline = (deadline: string) => {
     const date = new Date(deadline);
@@ -568,9 +558,6 @@ export const Dashboard = () => {
     }
     return categoryData.category;
   };
-
-
-
 
   const groupStudentsByCategory = () => {
     const grouped: {[category: string]: {[name: string]: any}} = {};
@@ -620,7 +607,6 @@ export const Dashboard = () => {
     const isOverdue = now > deadline;
     return isOverdue;
   };
-
 
   // Filter assignments by course for pending tests section
   const getFilteredAssignmentsByCourse = () => {
@@ -684,8 +670,6 @@ export const Dashboard = () => {
     
     return filtered;
   };
-
-
 
   // Filter assignments based on type and search
   const filteredAssignments = assignments.filter(assignment => {
@@ -757,7 +741,6 @@ export const Dashboard = () => {
             const topicName = topicsData[topicId]?.name || topicId;
             allAssignmentsData[topicId] = await fetchAssignments(topicId, dateWindow, topicName);
           } catch (error) {
-            console.error(`Error loading assignments for topic ${topicId}:`, error);
             allAssignmentsData[topicId] = [];
           }
         })
@@ -785,7 +768,6 @@ export const Dashboard = () => {
                 );
                 return { topicId, topicName, assignment, studentData };
               } catch (error) {
-                console.error(`Error checking assignment ${assignment.data.title} in topic ${topicId}:`, error);
                 return null;
               }
             })
@@ -796,7 +778,6 @@ export const Dashboard = () => {
 
       return rows;
     } catch (error) {
-      console.error('Error loading all assignments for teacher report:', error);
       return [];
     }
   };
@@ -865,7 +846,6 @@ export const Dashboard = () => {
 
       setTeacherGradingReport(report);
   } catch (error) {
-      console.error('Error loading teacher grading report:', error);
       toast.error('Error loading teacher grading report');
     } finally {
       setLoadingTeacherReport(false);
@@ -900,7 +880,6 @@ export const Dashboard = () => {
         students: gradedStudents
       });
     } catch (error) {
-      console.error('Error loading assignment details:', error);
       toast.error('Error loading assignment details');
     }
   };
@@ -972,7 +951,6 @@ export const Dashboard = () => {
     
     return filteredTeachers;
   };
-
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -1577,7 +1555,6 @@ export const Dashboard = () => {
                 </div>
               )}
             </div>
-
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 max-h-[1200px]">
             <div className="lg:col-span-1 space-y-6">

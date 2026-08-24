@@ -2,8 +2,15 @@ import React from 'react';
 import { getTeacherPortalUrl } from '../config/constants';
 import { database } from '../config/firebase';
 import { ref, get } from 'firebase/database';
+import { ensureOlevelsSignedIn } from './olevelsAuth';
 
-// Function to show admin access denied page
+/**
+ * Shared SSO contract (same as Exam / Redeem / class):
+ * - Cookie: slim teacher session with sessionProof (no customToken required)
+ * - Auth: POST /auth/exchange as role "teacher" → Firebase
+ * - Admin: RTDB teachers/{user}.admin or moduleAccess.admin (never cookie boolean alone)
+ */
+
 const showAdminAccessDeniedPage = () => {
   document.body.innerHTML = `
     <div style="
@@ -47,8 +54,7 @@ const showAdminAccessDeniedPage = () => {
       </div>
     </div>
   `;
-  
-  // Start countdown
+
   let countdown = 30;
   const countdownElement = document.getElementById('countdown');
   const interval = setInterval(() => {
@@ -63,51 +69,113 @@ const showAdminAccessDeniedPage = () => {
   }, 1000);
 };
 
-// Teacher authentication interface
+/** Slim SSO cookie from live.olevels.com — fields may be partial. */
 interface TeacherAuth {
-  id: number;
-  username: string;
-  password: string;
-  email: string;
-  admin: boolean;
-  displayName: string;
-  OTP: string;
-  isTeacher: boolean;
+  id?: number;
+  username?: string;
+  password?: string;
+  email?: string;
+  admin?: boolean | string;
+  displayName?: string;
+  OTP?: string;
+  isTeacher?: boolean | string;
+  role?: string;
+  sessionProof?: string;
+  sessionEpoch?: number;
+  name?: string;
+  teacherName?: string;
+}
+
+function parseTeacherCookiePayload(raw: string): TeacherAuth | null {
+  const attempts: string[] = [raw.trim()];
+  let current = raw.trim();
+  for (let i = 0; i < 3; i += 1) {
+    if (!/%[0-9A-Fa-f]{2}/.test(current)) break;
+    try {
+      const decoded = decodeURIComponent(current);
+      if (decoded === current) break;
+      attempts.push(decoded);
+      current = decoded;
+    } catch {
+      break;
+    }
+  }
+  const ordered =
+    raw.includes('%7B') || raw.includes('%22')
+      ? [...attempts].reverse()
+      : attempts;
+  for (const value of ordered) {
+    try {
+      return JSON.parse(value) as TeacherAuth;
+    } catch {
+      /* next */
+    }
+  }
+  return null;
+}
+
+/** Staff cookie is enough to attempt SSO — do not require isTeacher/admin booleans. */
+export function looksLikeStaffSession(data: TeacherAuth | null): boolean {
+  if (!data) return false;
+  if (data.isTeacher === false) return false;
+  if (data.isTeacher === true || data.admin === true || data.admin === 'true') {
+    return true;
+  }
+  const role = String(data.role || '').toLowerCase();
+  if (role === 'teacher' || role === 'admin') return true;
+  return !!(
+    data.sessionProof &&
+    (data.username || data.displayName || data.name || data.teacherName)
+  );
+}
+
+export function teacherUsername(data: TeacherAuth | null): string {
+  return String(
+    data?.username || data?.displayName || data?.name || data?.teacherName || ''
+  ).trim();
 }
 
 export const checkTeacherCookies = (): TeacherAuth | null => {
   try {
-    const cookies = document.cookie.split("; ");
-    let teacherCookie = null;
-    
+    const cookies = document.cookie.split('; ');
+    let teacherCookie: string | null = null;
+
     for (let i = 0; i < cookies.length; i++) {
-      const cookie = cookies[i].split("=");
+      const cookie = cookies[i].split('=');
       if (cookie[0] === 'teacher') {
         teacherCookie = cookie.slice(1).join('=');
         break;
       }
     }
-    
+
     if (!teacherCookie) {
+      try {
+        const ls = localStorage.getItem('teacher_login');
+        if (ls) return JSON.parse(ls) as TeacherAuth;
+      } catch {
+        /* ignore */
+      }
       return null;
     }
-    
-    const teacherData: TeacherAuth = JSON.parse(decodeURIComponent(teacherCookie));
-    
-    return teacherData;
-  } catch (error) {
-    console.error('Error checking teacher cookies:', error);
+
+    return parseTeacherCookiePayload(teacherCookie);
+  } catch {
     return null;
   }
 };
 
-export const checkAdminStatusFromFirebase = async (username: string): Promise<boolean> => {
+export const checkAdminStatusFromFirebase = async (
+  username: string
+): Promise<boolean> => {
   try {
+    await ensureOlevelsSignedIn();
+
     const teacherRef = ref(database, `teachers/${username}`);
     const teacherSnapshot = await get(teacherRef);
     if (teacherSnapshot.exists()) {
       const teacherData = teacherSnapshot.val();
       if (teacherData.admin === true) return true;
+      if (teacherData.moduleAccess?.admin === true) return true;
     }
 
     const moduleAccessRef = ref(database, `teachers/${username}/moduleAccess`);
@@ -119,164 +187,118 @@ export const checkAdminStatusFromFirebase = async (username: string): Promise<bo
 
     return false;
   } catch (error) {
-    console.error('Error checking admin status from Firebase:', error);
+    console.warn('[authGuard] admin RTDB check failed', error);
     return false;
   }
 };
 
-// Check if user is authenticated and has admin access (async version)
+const isLocalDevHost = () =>
+  window.location.hostname === 'localhost' ||
+  window.location.hostname === '127.0.0.1';
+
 export const isAuthenticatedAdminAsync = async (): Promise<boolean> => {
-  // Skip authentication check on localhost for development
-  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    return true;
-  }
-  
+  if (isLocalDevHost()) return true;
+
   const teacherData = checkTeacherCookies();
-  
-  if (!teacherData) {
-    return false;
-  }
-  
-  // Check if user is teacher
-  if (!teacherData.isTeacher) {
-    return false;
-  }
-  
-  // Check admin status from Firebase Realtime Database
-  const isAdmin = await checkAdminStatusFromFirebase(teacherData.username);
-  return isAdmin;
+  if (!looksLikeStaffSession(teacherData)) return false;
+  const username = teacherUsername(teacherData);
+  if (!username) return false;
+  return checkAdminStatusFromFirebase(username);
 };
 
-// Check if user is authenticated and has admin access (sync version for immediate checks)
+/** Sync hint only — real admin = RTDB via isAuthenticatedAdminAsync / authGuardAsync. */
 export const isAuthenticatedAdmin = (): boolean => {
-  // Skip authentication check on localhost for development
-  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    return true;
-  }
-  
-  const teacherData = checkTeacherCookies();
-  
-  if (!teacherData) {
-    return false;
-  }
-  
-  // For immediate checks, use cookie data (may not be up-to-date)
-  // Firebase check will be done in authGuard for final verification
-  return teacherData.isTeacher === true;
+  if (isLocalDevHost()) return true;
+  return looksLikeStaffSession(checkTeacherCookies());
 };
 
-// Authentication guard function (async version)
 export const authGuardAsync = async (): Promise<boolean> => {
-  // Skip authentication check on localhost for development
-  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    return true;
-  }
-  
-  const teacherData = checkTeacherCookies();
-  
-  // Get current URL for redirect after login
-  const currentUrl = encodeURIComponent(window.location.href);
-  
-  if (!teacherData) {
-    window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
-    return false;
-  }
-  
-  // Not a teacher - redirect to teacher login
-  if (!teacherData.isTeacher) {
-    window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
-    return false;
-  }
-  
-  // Check admin status from Firebase Realtime Database
-  try {
-    const isAdmin = await checkAdminStatusFromFirebase(teacherData.username);
-    
-    if (!isAdmin) {
-      showAdminAccessDeniedPage();
-      return false;
-    }
-    
-    // All checks passed - user is authenticated admin
-    return true;
-  } catch (error) {
-    console.error('Error checking admin status:', error);
-    // Fallback to cookie check if Firebase fails
-    if (!teacherData.admin) {
-      showAdminAccessDeniedPage();
-      return false;
-    }
-    return true;
-  }
-};
+  if (isLocalDevHost()) return true;
 
-export const authGuard = (): boolean => {
-  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    return true;
-  }
-  
   const teacherData = checkTeacherCookies();
-  
   const currentUrl = encodeURIComponent(window.location.href);
-  
-  if (!teacherData) {
-    window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
-    return false;
-  }
-  
 
-  if (!teacherData.isTeacher) {
+  if (!looksLikeStaffSession(teacherData)) {
     window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
     return false;
   }
-  
-  if (!teacherData.admin) {
+
+  const username = teacherUsername(teacherData);
+  if (!username) {
+    window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
+    return false;
+  }
+
+  const firebaseUser = await ensureOlevelsSignedIn();
+  if (!firebaseUser) {
+    console.warn(
+      '[authGuard] teacher cookie present but Firebase session missing — re-SSO'
+    );
+    window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
+    return false;
+  }
+
+  const isAdmin = await checkAdminStatusFromFirebase(username);
+  if (!isAdmin) {
     showAdminAccessDeniedPage();
     return false;
   }
-  
+  return true;
+};
+
+/**
+ * Sync entry: cookie present only. Never block on cookie.admin / isTeacher —
+ * those fields are often missing on slim SSO cookies. Callers that need a
+ * hard gate must use authGuardAsync.
+ */
+export const authGuard = (): boolean => {
+  if (isLocalDevHost()) return true;
+
+  const teacherData = checkTeacherCookies();
+  const currentUrl = encodeURIComponent(window.location.href);
+
+  if (!looksLikeStaffSession(teacherData)) {
+    window.location.href = `${getTeacherPortalUrl()}/teacher?redirect=${currentUrl}`;
+    return false;
+  }
   return true;
 };
 
 export const useAuthGuard = () => {
   const [isAuthenticated, setIsAuthenticated] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(true);
-  
+
   React.useEffect(() => {
     const checkAuth = async () => {
       try {
         const authResult = await authGuardAsync();
         setIsAuthenticated(authResult);
-      } catch (error) {
-        console.error('Authentication check failed:', error);
+      } catch {
         setIsAuthenticated(false);
       } finally {
         setIsLoading(false);
       }
     };
-    
-    checkAuth();
+
+    void checkAuth();
   }, []);
-  
+
   return { isAuthenticated, isLoading };
 };
 
-// Logout function to clear cookies and redirect
 export const logout = () => {
   try {
-    // Clear localStorage
     localStorage.removeItem('teacher_login');
-    
-    // Clear cookies by setting them to expire
     const pastDate = new Date(0).toUTCString();
     document.cookie = `teacher=; domain=olevels.com; path=/; expires=${pastDate}`;
-    
-    // Redirect to teacher login with logout message
-    const logoutMessage = encodeURIComponent('You have been logged out successfully.');
-    window.open(`${getTeacherPortalUrl()}/teacher?message=${logoutMessage}`, '_blank');
-  } catch (error) {
-    console.error('Error during logout:', error);
-    // Force redirect even if clearing fails
+    const logoutMessage = encodeURIComponent(
+      'You have been logged out successfully.'
+    );
+    window.open(
+      `${getTeacherPortalUrl()}/teacher?message=${logoutMessage}`,
+      '_blank'
+    );
+  } catch {
     window.open(`${getTeacherPortalUrl()}/teacher`, '_blank');
   }
 };
