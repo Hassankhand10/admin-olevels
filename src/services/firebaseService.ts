@@ -3,6 +3,7 @@ import {
   collection,
   query,
   where,
+  or,
   getDocs,
   getDoc,
   doc,
@@ -186,20 +187,23 @@ async function fetchLiveAssignmentsFromFirestore(
   topic: string
 ): Promise<{ id: string; data: Assignment }[]> {
   const col = collection(firestore, ASSIGNMENTS_COL);
-  const snapshots = await Promise.all([
-    getDocs(query(col, where('topic', '==', topic))),
-    getDocs(query(col, where('topicId', '==', topic))),
-  ]);
+  const snapshot = await getDocs(query(col, or(
+    where('topic', '==', topic),
+    where('topicId', '==', topic),
+  )));
+  // Keep the old topic-first order, with legacy topicId-only rows afterward.
+  const documents = [
+    ...snapshot.docs.filter(row => row.data().topic === topic),
+    ...snapshot.docs.filter(row => row.data().topic !== topic),
+  ];
 
   const byId = new Map<string, { id: string; data: Assignment }>();
-  for (const snap of snapshots) {
-    snap.forEach((docSnap) => {
-      const raw = docSnap.data() as Record<string, unknown>;
-      if (isAssignmentArchived(raw)) return;
-      const data = firestoreAssignmentDocToAssignment(raw);
-      byId.set(docSnap.id, { id: docSnap.id, data });
-    });
-  }
+  documents.forEach((docSnap) => {
+    const raw = docSnap.data() as Record<string, unknown>;
+    if (isAssignmentArchived(raw)) return;
+    const data = firestoreAssignmentDocToAssignment(raw);
+    byId.set(docSnap.id, { id: docSnap.id, data });
+  });
   return Array.from(byId.values());
 }
 
