@@ -1,9 +1,10 @@
-import { useState, useEffect, Fragment } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import { BookOpen, FileText, Users, CheckCircle } from 'lucide-react';
 import OLevelsLogo from '../assets/OLevels-logo-color.png';
 import {
   fetchAssignments,
   fetchWeeklyTestsFromFirestore,
+  fetchAllWeeklyTestsGroupedByTopic,
   fetchWeeklyTestStudentSubmissions,
   fetchStudentSubmissions,
   fetchTopics,
@@ -12,6 +13,7 @@ import {
   WEEKLY_TEST_LOOKBACK_DAYS,
   updateSupervisionApproval,
   fetchStudentCategories,
+  isWeeklyTestCategory,
 } from '../services/firebaseService';
 import { Assignment, StudentData, StudentSubmission, WeeklyTestListItem } from '../types';
 import toast, { Toaster } from 'react-hot-toast';
@@ -26,6 +28,7 @@ export const Dashboard = () => {
   const [selectedTopic, setSelectedTopic] = useState<string>('');
   const [assignments, setAssignments] = useState<WeeklyTestListItem[]>([]);
   const [, setAllAssignments] = useState<{[topicId: string]: WeeklyTestListItem[]}>({});
+  const allAssignmentsRef = useRef<{[topicId: string]: WeeklyTestListItem[]}>({});
   const [assignmentsByCourse, setAssignmentsByCourse] = useState<{[courseId: string]: Array<{
     topicId: string;
     topicName: string;
@@ -130,10 +133,9 @@ export const Dashboard = () => {
     startDate: string;
     endDate: string;
   }>(() => getTeacherReportDefaultDateRange());
-  
-  
-  
 
+  const allTopicsLoadGenRef = useRef(0);
+  const topicAssignmentsLoadGenRef = useRef(0);
   useEffect(() => {
     loadCourses();
     loadAllTopics();
@@ -206,7 +208,7 @@ export const Dashboard = () => {
     }
   };
 
-  const loadUngradedAssignments = async (assignmentsData: {[topicId: string]: WeeklyTestListItem[]}, topicsData: {[key: string]: {course: any}}) => {
+  const loadUngradedAssignments = async (assignmentsData: {[topicId: string]: WeeklyTestListItem[]}, topicsData: {[key: string]: {course: any; name?: string}}) => {
     setLoadingUngradedAssignments(true);
     try {
       const ungradedList: Array<{
@@ -222,7 +224,7 @@ export const Dashboard = () => {
       // Process assignments in batches to reduce API calls - only WeeklyTest assignments
       const allAssignments = Object.entries(assignmentsData).flatMap(([topicId, topicAssignments]) =>
         topicAssignments
-          .filter(assignment => assignment.data.selectedAssignmentCategory === 'WeeklyTest')
+          .filter(assignment => isWeeklyTestCategory(assignment.data.selectedAssignmentCategory))
           .map(assignment => ({ topicId, assignment }))
       );
 
@@ -232,29 +234,12 @@ export const Dashboard = () => {
         
         const batchPromises = batch.map(async ({ topicId, assignment }) => {
           try {
-            const def = assignment.data || ({} as Assignment);
-            const studentsLength = Number(def.studentsLength) || 0;
-            const submittedCount = Number(def.submissions) || 0;
-            const gradedCount = Number(def.grading) || 0;
-
-            // Prefer definition counters for badges — avoid N× full roster getAll.
-            // Fall back to roster only when counters are missing entirely.
-            if (studentsLength > 0 || submittedCount > 0 || gradedCount > 0) {
-              if (submittedCount > 0 && gradedCount < submittedCount) {
-                return {
-                  topicId,
-                  topicName: topicsData[topicId]?.course?.name || topicId,
-                  assignment,
-                  needsGrading: true,
-                  totalStudents: studentsLength || submittedCount,
-                  submittedStudents: submittedCount,
-                  gradedStudents: gradedCount
-                };
-              }
-              return null;
-            }
-
-            const studentData = await fetchStudentSubmissions(topicId, assignment.data.title);
+            const topicName = topicsData[topicId]?.name || topicId;
+            const studentData = await fetchStudentSubmissions(
+              topicId,
+              assignment.data.title,
+              topicName
+            );
             const studentCount = Object.keys(studentData).length;
             
             let submitted = 0;
@@ -311,7 +296,7 @@ export const Dashboard = () => {
     }
   };
 
-  const loadUnmarkedPapers = async (assignmentsData: {[topicId: string]: WeeklyTestListItem[]}, topicsData: {[key: string]: {course: any}}) => {
+  const loadUnmarkedPapers = async (assignmentsData: {[topicId: string]: WeeklyTestListItem[]}, topicsData: {[key: string]: {course: any; name?: string}}) => {
     try {
       const unmarkedPapersList: Array<{
         topicId: string;
@@ -326,7 +311,7 @@ export const Dashboard = () => {
       // Process assignments in batches to reduce API calls - only WeeklyTest assignments
       const allAssignments = Object.entries(assignmentsData).flatMap(([topicId, topicAssignments]) =>
         topicAssignments
-          .filter(assignment => assignment.data.selectedAssignmentCategory === 'WeeklyTest')
+          .filter(assignment => isWeeklyTestCategory(assignment.data.selectedAssignmentCategory))
           .map(assignment => ({ topicId, assignment }))
       );
 
@@ -337,8 +322,12 @@ export const Dashboard = () => {
         const batchPromises = batch.map(async ({ topicId, assignment }) => {
           try {
             
-            const studentData = await fetchStudentSubmissions(topicId, assignment.data.title);
-            const topicName = topicsData[topicId]?.course?.name || topicId;
+            const topicName = topicsData[topicId]?.name || topicsData[topicId]?.course?.name || topicId;
+            const studentData = await fetchStudentSubmissions(
+              topicId,
+              assignment.data.title,
+              topicName
+            );
             
             // Use grading deadline from database
             const gradingDeadline = new Date(assignment.data.gradingDeadline);
@@ -389,37 +378,62 @@ export const Dashboard = () => {
   };
 
   const loadAllAssignmentsFromAllTopics = async () => {
+    const generation = ++allTopicsLoadGenRef.current;
     try {
       const topicsData = await fetchTopics();
-      const allAssignmentsData: {[topicId: string]: WeeklyTestListItem[]} = {};
-      
+      if (generation !== allTopicsLoadGenRef.current) return;
+
       const dateWindow = parseDashboardDateFilterToWindow(
         teacherReportDateFilter.startDate,
         teacherReportDateFilter.endDate
       );
 
-      // Pending / unmarked: Firestore weekly tests (same date window as main list)
-      const assignmentPromises = Object.keys(topicsData).map(async (topicId) => {
-        try {
-          const assignments = await fetchWeeklyTestsFromFirestore(topicId, dateWindow);
-          allAssignmentsData[topicId] = assignments;
-        } catch (error) {
-          allAssignmentsData[topicId] = [];
+      let allAssignmentsData: {[topicId: string]: WeeklyTestListItem[]} = {};
+      try {
+        allAssignmentsData = await fetchAllWeeklyTestsGroupedByTopic(dateWindow, topicsData);
+      } catch (error) {
+        console.error('Fast weekly-test collection query failed, falling back per-topic:', error);
+        const topicIds = Object.keys(topicsData);
+        const concurrency = 8;
+        for (let i = 0; i < topicIds.length; i += concurrency) {
+          if (generation !== allTopicsLoadGenRef.current) return;
+          const slice = topicIds.slice(i, i + concurrency);
+          const batch = await Promise.all(
+            slice.map(async (topicId) => {
+              try {
+                const topicName = topicsData[topicId]?.name || topicId;
+                const assignments = await fetchWeeklyTestsFromFirestore(
+                  topicId,
+                  dateWindow,
+                  topicName
+                );
+                return { topicId, assignments };
+              } catch (topicError) {
+                console.error(`Error loading assignments for topic ${topicId}:`, topicError);
+                return { topicId, assignments: [] as WeeklyTestListItem[] };
+              }
+            })
+          );
+          for (const row of batch) {
+            allAssignmentsData[row.topicId] = row.assignments;
+          }
         }
-      });
+      }
 
-      await Promise.all(assignmentPromises);
+      if (generation !== allTopicsLoadGenRef.current) return;
+
+      allAssignmentsRef.current = allAssignmentsData;
       setAllAssignments(allAssignmentsData);
-      
-      // Load ungraded assignments after all assignments are loaded
-      loadUngradedAssignments(allAssignmentsData, topicsData);
-      
-      // Load unmarked papers after all assignments are loaded
-      loadUnmarkedPapers(allAssignmentsData, topicsData);
-      
+
+      // Pending lists need student reads — run after the fast assignment list is ready.
+      void loadUngradedAssignments(allAssignmentsData, topicsData);
+      void loadUnmarkedPapers(allAssignmentsData, topicsData);
+
       toast.success('All assignments loaded successfully');
     } catch (error) {
-      toast.error('Error loading all assignments');
+      console.error('Error loading all assignments:', error);
+      if (generation !== allTopicsLoadGenRef.current) return;
+      toast.error('Error refreshing assignments — previous list kept');
     }
   };
 
@@ -444,19 +458,27 @@ export const Dashboard = () => {
   };
 
   const loadAssignments = async (topic: string) => {
+    const generation = ++topicAssignmentsLoadGenRef.current;
     setLoadingAssignments(true);
     try {
       const dateWindow = parseDashboardDateFilterToWindow(
         teacherReportDateFilter.startDate,
         teacherReportDateFilter.endDate
       );
-      const assignmentsData = await fetchAssignments(topic, dateWindow);
+      const topicName = allTopics[topic]?.name || topic;
+      const assignmentsData = await fetchAssignments(topic, dateWindow, topicName);
+      if (generation !== topicAssignmentsLoadGenRef.current) return;
       setAssignments(assignmentsData);
       toast.success('Assignments loaded successfully');
     } catch (error) {
-      toast.error('Error loading assignments');
+      console.error('Error loading assignments:', error);
+      if (generation !== topicAssignmentsLoadGenRef.current) return;
+      toast.error('Error refreshing assignments — previous list kept');
+      // Do not clear assignments on failure
     } finally {
-      setLoadingAssignments(false);
+      if (generation === topicAssignmentsLoadGenRef.current) {
+        setLoadingAssignments(false);
+      }
     }
   };
 
@@ -716,7 +738,8 @@ export const Dashboard = () => {
       await Promise.all(
         Object.keys(topicsData).map(async (topicId) => {
           try {
-            allAssignmentsData[topicId] = await fetchAssignments(topicId, dateWindow);
+            const topicName = topicsData[topicId]?.name || topicId;
+            allAssignmentsData[topicId] = await fetchAssignments(topicId, dateWindow, topicName);
           } catch (error) {
             allAssignmentsData[topicId] = [];
           }
@@ -768,7 +791,7 @@ export const Dashboard = () => {
 
       const weeklyTestRows = rows.filter(
         (item) =>
-          item.assignment.data.selectedAssignmentCategory === 'WeeklyTest' ||
+          isWeeklyTestCategory(item.assignment.data.selectedAssignmentCategory) ||
           item.assignment.archivedFirestoreDocId != null
       );
 
