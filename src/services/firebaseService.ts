@@ -224,6 +224,8 @@ function firestoreAssignmentDocToAssignment(raw: Record<string, unknown>): Assig
   if (submissionCount != null) base.submissionCount = submissionCount;
   const gradedCount = pickFiniteCount(raw.grading ?? raw.gradedCount);
   if (gradedCount != null) base.gradedCount = gradedCount;
+  const resultStatus = pickNonEmptyString(raw.resultStatus) ?? pickNonEmptyString(raw.result_status);
+  if (resultStatus) base.resultStatus = resultStatus;
 
   return base;
 }
@@ -868,17 +870,6 @@ export function isStudentGraded(s: StudentData[string] | null | undefined): bool
   return studentHasNumericMarks(r);
 }
 
-function isAiLifecycleCompleteToken(norm: string): boolean {
-  return (
-    norm === 'completed' ||
-    norm === 'complete' ||
-    norm === 'done' ||
-    norm === 'graded' ||
-    norm === 'success' ||
-    norm === 'published'
-  );
-}
-
 /**
  * When true, the AI-graded dashboard maps the row to `pending_evaluation` (“AI assignment created — evaluation incomplete”):
  * {@link pickAiAssignmentStatus} normalizes to `pending` and {@link pickAiAssignmentId} is present (numeric or string id).
@@ -914,32 +905,61 @@ export function isAiGradingStatusInProcess(raw: unknown): boolean {
   return asPhrase === 'ai grading in process' || asPhrase === 'in process' || asPhrase === 'inprogress';
 }
 
-/** Dashboard status from AI fields + submission/graded counts. Matches teacher portal Completed / Awaiting. */
+/** Teacher portal `resultStatus`: `graded_not_released` or `graded not release`. */
+export function isGradedNotReleasedStatus(raw: unknown): boolean {
+  const norm = normalizeAiStatusToken(raw);
+  if (!norm) return false;
+  const asPhrase = norm.replace(/[_-]+/g, ' ').replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+  const compact = asPhrase.replace(/\s+/g, '');
+  return (
+    asPhrase === 'graded not released' ||
+    asPhrase === 'graded not release' ||
+    compact === 'gradednotreleased' ||
+    compact === 'gradednotrelease'
+  );
+}
+
+/** Teacher portal `isAssignmentResultHeldFromStudent`. */
+export function isStudentResultHeld(s: StudentData[string] | null | undefined): boolean {
+  if (!s) return false;
+  const r = s as unknown as Record<string, unknown>;
+  const graded = r.graded === true || String(r.graded) === 'true';
+  if (!graded) return false;
+  if (isGradedNotReleasedStatus(r.resultStatus)) return true;
+  return r.resultsReleased === false;
+}
+
+/**
+ * Matches the teacher assignment label:
+ * all submitted students graded + results still held → Graded — results not released;
+ * all submitted students graded + released → Completed.
+ * `resultStatus: graded_not_released` is never shown as Completed.
+ */
 export function resolveAIGradingDashboardStatus(
   data: Assignment,
   submittedStudents: number,
-  gradedStudents: number
+  gradedStudents: number,
+  resultsHeld = false
 ): AIGradingStatus {
   const assignmentNorm = normalizeAiStatusToken(pickAiAssignmentStatus(data));
-  const processingNorm = normalizeAiStatusToken(pickAiAssignmentProcessingStatus(data));
   const gradingRun = pickAiGradingStatus(data);
+  const resultStatus = data.resultStatus;
+  const released = normalizeAiStatusToken(resultStatus) === 'released';
+  const explicitlyHeld = isGradedNotReleasedStatus(resultStatus);
+  const held = explicitlyHeld || (!released && resultsHeld);
 
-  // Prefer explicit lifecycle completion from AI fields (assignment page COMPLETED badge).
-  if (isAiLifecycleCompleteToken(assignmentNorm) || isAiLifecycleCompleteToken(processingNorm)) {
-    return 'completed';
+  const fullyGraded =
+    (submittedStudents > 0 && gradedStudents >= submittedStudents) ||
+    (data.submissionCount != null &&
+      data.gradedCount != null &&
+      data.submissionCount > 0 &&
+      data.gradedCount >= data.submissionCount);
+
+  if (explicitlyHeld || (fullyGraded && held)) {
+    return 'graded_not_released';
   }
 
-  if (submittedStudents > 0 && gradedStudents >= submittedStudents) {
-    return 'completed';
-  }
-
-  // Teacher portal fallback when roster checks are empty: assignment.grading >= assignment.submissions
-  if (
-    data.submissionCount != null &&
-    data.gradedCount != null &&
-    data.submissionCount > 0 &&
-    data.gradedCount >= data.submissionCount
-  ) {
+  if (fullyGraded) {
     return 'completed';
   }
 
@@ -1022,6 +1042,7 @@ export type AIGradingStatus =
   | 'pending_evaluation'
   | 'ready_for_evaluation'
   | 'in_process'
+  | 'graded_not_released'
   | 'completed';
 
 export interface AIGradedAssignmentItem {
@@ -1081,6 +1102,7 @@ function buildAIGradedRow(params: {
   totalStudents?: number;
   submittedStudents?: number;
   gradedStudents?: number;
+  resultsHeld?: boolean;
 }): AIGradedAssignmentItem {
   const submittedStudents = params.submittedStudents ?? 0;
   const gradedStudents = params.gradedStudents ?? 0;
@@ -1096,7 +1118,8 @@ function buildAIGradedRow(params: {
     status: resolveAIGradingDashboardStatus(
       params.assignment.data,
       submittedStudents,
-      gradedStudents
+      gradedStudents,
+      params.resultsHeld
     ),
   };
 }
@@ -1385,6 +1408,7 @@ export async function enrichAIGradedItemsWithSubmissionCounts(
         let totalStudents = 0;
         let submittedStudents = 0;
         let gradedStudents = 0;
+        let resultsHeld = false;
         try {
           const studentData = item.assignment.archivedFirestoreDocId
             ? await fetchWeeklyTestStudentSubmissions(
@@ -1399,6 +1423,7 @@ export async function enrichAIGradedItemsWithSubmissionCounts(
               );
           totalStudents = Object.keys(studentData).length;
           Object.values(studentData).forEach((s) => {
+            if (isStudentResultHeld(s)) resultsHeld = true;
             if (isStudentSubmitted(s)) {
               submittedStudents++;
               if (isStudentGraded(s)) gradedStudents++;
@@ -1420,6 +1445,7 @@ export async function enrichAIGradedItemsWithSubmissionCounts(
           totalStudents,
           submittedStudents,
           gradedStudents,
+          resultsHeld,
         });
       })
     );

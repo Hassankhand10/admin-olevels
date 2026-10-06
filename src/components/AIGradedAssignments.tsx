@@ -103,6 +103,18 @@ const STATUS_META: Record<
     iconBg: 'from-indigo-500 to-indigo-600',
     progress: 'bg-indigo-500',
   },
+  graded_not_released: {
+    label: 'Graded — results not released',
+    short: 'Not released',
+    icon: AlertTriangle,
+    badge: 'bg-amber-100 text-amber-900 border-amber-200',
+    chip: 'bg-amber-500',
+    accent: 'text-amber-800',
+    cardBorder: 'border-amber-200 hover:border-amber-400',
+    cardBg: 'from-amber-50 to-white',
+    iconBg: 'from-amber-500 to-orange-600',
+    progress: 'bg-amber-500',
+  },
   completed: {
     label: 'Completed',
     short: 'Completed',
@@ -282,6 +294,7 @@ export const AIGradedAssignments = () => {
     const pendingEvaluation = itemsForScope.filter((i) => i.status === 'pending_evaluation').length;
     const readyForEvaluation = itemsForScope.filter((i) => i.status === 'ready_for_evaluation').length;
     const inProcess = itemsForScope.filter((i) => i.status === 'in_process').length;
+    const gradedNotReleased = itemsForScope.filter((i) => i.status === 'graded_not_released').length;
     const completed = itemsForScope.filter((i) => i.status === 'completed').length;
 
     const submissionsTotal = itemsForScope.reduce((sum, i) => sum + i.submittedStudents, 0);
@@ -295,6 +308,7 @@ export const AIGradedAssignments = () => {
       pendingEvaluation,
       readyForEvaluation,
       inProcess,
+      gradedNotReleased,
       completed,
       submissionsTotal,
       gradedTotal,
@@ -438,7 +452,7 @@ export const AIGradedAssignments = () => {
         ) : (
           <>
             {/* Stat cards — five statuses + total */}
-            <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+            <section className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-7 gap-4">
               <StatCard
                 title="Total"
                 value={stats.total}
@@ -489,9 +503,19 @@ export const AIGradedAssignments = () => {
                 active={statusFilter === 'in_process'}
               />
               <StatCard
+                title="Not released"
+                value={stats.gradedNotReleased}
+                sub="Graded — results not released"
+                icon={AlertTriangle}
+                gradient="from-amber-500 to-orange-600"
+                ringColor="ring-amber-100"
+                onClick={() => setStatusFilter('graded_not_released')}
+                active={statusFilter === 'graded_not_released'}
+              />
+              <StatCard
                 title="Completed"
                 value={stats.completed}
-                sub="All submitters graded"
+                sub="Graded and released"
                 icon={CheckCircle2}
                 gradient="from-emerald-500 to-emerald-600"
                 ringColor="ring-emerald-100"
@@ -529,6 +553,7 @@ export const AIGradedAssignments = () => {
                   <Legend color="bg-orange-500" label={`${stats.pendingEvaluation} Eval incomplete`} />
                   <Legend color="bg-cyan-500" label={`${stats.readyForEvaluation} Ready`} />
                   <Legend color="bg-indigo-500" label={`${stats.inProcess} In process`} />
+                  <Legend color="bg-amber-500" label={`${stats.gradedNotReleased} Not released`} />
                   <Legend color="bg-emerald-500" label={`${stats.completed} Completed`} />
                 </div>
               </div>
@@ -588,6 +613,7 @@ export const AIGradedAssignments = () => {
                     <option value="pending_evaluation">2 · AI created — eval incomplete</option>
                     <option value="ready_for_evaluation">3 · Ready for evaluation</option>
                     <option value="in_process">4 · AI Grading In Process</option>
+                    <option value="graded_not_released">Graded — results not released</option>
                     <option value="completed">5 · Completed</option>
                   </select>
                 </div>

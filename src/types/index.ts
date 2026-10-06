@@ -25,6 +25,8 @@ export interface Assignment {
   submissionCount?: number;
   /** Assignment-doc counter of graded papers (teacher portal `grading` field). */
   gradedCount?: number;
+  /** Teacher portal release state: `graded_not_released` or `released`. */
+  resultStatus?: string;
 }
 
 export interface StudentSubmission {
