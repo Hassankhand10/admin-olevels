@@ -452,7 +452,10 @@ export const AIGradedAssignments = () => {
         ) : (
           <>
             {/* Stat cards — five statuses + total */}
-            <section className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-7 gap-4">
+            <section
+              className="grid w-full gap-3"
+              style={{ gridTemplateColumns: 'repeat(7, minmax(0, 1fr))' }}
+            >
               <StatCard
                 title="Total"
                 value={stats.total}
@@ -777,22 +780,22 @@ const StatCard = ({
       type="button"
       onClick={onClick}
       disabled={!isClickable}
-      className={`text-left bg-white rounded-2xl shadow-md border p-5 transition-all duration-200 ${
+      className={`w-full min-w-0 text-left bg-white rounded-2xl shadow-md border p-4 transition-all duration-200 ${
         isClickable ? 'hover:shadow-lg hover:-translate-y-0.5 cursor-pointer' : 'cursor-default'
       } ${active ? `ring-4 ${ringColor} border-transparent` : 'border-gray-100'}`}
     >
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{title}</p>
-          <p className="text-3xl font-extrabold text-gray-900 mt-1">{value}</p>
-          <p className="text-xs text-gray-500 mt-1">{sub}</p>
-        </div>
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide leading-snug break-words">
+          {title}
+        </p>
         <div
-          className={`bg-gradient-to-br ${gradient} p-3 rounded-xl shadow-md text-white flex items-center justify-center`}
+          className={`bg-gradient-to-br ${gradient} p-2 rounded-xl shadow-md text-white flex items-center justify-center shrink-0`}
         >
-          <Icon className={`w-6 h-6 ${spinIcon ? 'animate-spin' : ''}`} />
+          <Icon className={`w-5 h-5 ${spinIcon ? 'animate-spin' : ''}`} />
         </div>
       </div>
+      <p className="text-3xl font-extrabold text-gray-900 mt-1">{value}</p>
+      <p className="text-xs text-gray-500 mt-1 leading-snug break-words">{sub}</p>
     </button>
   );
 };
