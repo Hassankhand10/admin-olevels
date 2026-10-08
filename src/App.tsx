@@ -6,6 +6,7 @@ import { AIGradedAssignments } from './components/AIGradedAssignments';
 import { RealtimeDbSizePage } from './components/RealtimeDbSizePage';
 import { CheckerUsagePage } from './components/CheckerUsagePage';
 import { useAuthGuard } from './utils/authGuard';
+import { ComponentBoundary, ComponentInspector } from './components/ComponentInspector';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
@@ -39,40 +40,41 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 function App() {
   return (
     <Router>
+      <ComponentInspector />
       <Routes>
         <Route path="/" element={
           <ProtectedRoute>
-            <HomePage />
+            <ComponentBoundary id="C-001"><HomePage /></ComponentBoundary>
           </ProtectedRoute>
         } />
         <Route path="/dashboard" element={
           <ProtectedRoute>
-            <HomePage />
+            <ComponentBoundary id="C-001"><HomePage /></ComponentBoundary>
           </ProtectedRoute>
         } />
         <Route path="/dashboard/weekly-test" element={
           <ProtectedRoute>
-            <Dashboard />
+            <ComponentBoundary id="C-002"><Dashboard /></ComponentBoundary>
           </ProtectedRoute>
         } />
         <Route path="/dashboard/student-performance-report" element={
           <ProtectedRoute>
-            <StudentPerformanceReport />
+            <ComponentBoundary id="C-003"><StudentPerformanceReport /></ComponentBoundary>
           </ProtectedRoute>
         } />
         <Route path="/dashboard/ai-graded-assignments" element={
           <ProtectedRoute>
-            <AIGradedAssignments />
+            <ComponentBoundary id="C-004"><AIGradedAssignments /></ComponentBoundary>
           </ProtectedRoute>
         } />
         <Route path="/dashboard/realtime-db-size" element={
           <ProtectedRoute>
-            <RealtimeDbSizePage />
+            <ComponentBoundary id="C-005"><RealtimeDbSizePage /></ComponentBoundary>
           </ProtectedRoute>
         } />
         <Route path="/dashboard/checker-usage" element={
           <ProtectedRoute>
-            <CheckerUsagePage />
+            <ComponentBoundary id="C-006"><CheckerUsagePage /></ComponentBoundary>
           </ProtectedRoute>
         } />
         <Route path="/home" element={<Navigate to="/dashboard" replace />} />

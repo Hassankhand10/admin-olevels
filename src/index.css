@@ -1,3 +1,44 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Development-only visual-to-source component map. These rules are inert in production. */
+.component-inspector-outline {
+  position: fixed;
+  z-index: 2147483646;
+  pointer-events: none;
+  border: 2px solid #2563eb;
+  background: rgba(37, 99, 235, 0.06);
+  border-radius: 4px;
+}
+.component-inspector-marker {
+  position: fixed;
+  z-index: 2147483645;
+  pointer-events: none;
+  padding: 2px 4px;
+  color: white;
+  background: #1d4ed8;
+  border-radius: 3px;
+  box-shadow: 0 1px 5px rgba(15, 23, 42, .25);
+  font: 10px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+  opacity: .85;
+}
+.component-inspector-badge {
+  position: fixed;
+  z-index: 2147483647;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(420px, calc(100vw - 8px));
+  padding: 5px 8px;
+  color: white;
+  background: #172554;
+  border: 1px solid #60a5fa;
+  border-radius: 5px;
+  box-shadow: 0 3px 12px rgba(15, 23, 42, .3);
+  font: 11px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: nowrap;
+}
+.component-inspector-badge strong { color: #93c5fd; }
+.component-inspector-badge small { color: #bfdbfe; opacity: .85; }
